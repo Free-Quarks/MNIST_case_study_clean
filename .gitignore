@@ -101,3 +101,7 @@ scripts/model_pn.json
 #openai API key
 openai_key.txt
 huggingface_key.txt
+
+# data that has been unzipped
+dataset/MNIST/modified/
+MNIST_test_case/saved_distributions
