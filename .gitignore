@@ -1,0 +1,103 @@
+~$*
+
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+
+.DS_Store
+
+.idea
+target
+project/target
+
+# MacOS:
+.DS_Store
+
+# JetBrains (PyCharm)
+.idea
+
+# VS Code
+.vscode
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+.env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest*
+
+# Generated files from program analysis
+*_lambdas.py
+preprocessed*
+!tests/data/**/*_lambdas.py
+
+# Adding lib files for TR webapp
+!src/text_reading/webapp/public/brat/client/lib
+
+# Jupyter notebook checkpoints
+*-checkpoint.ipynb
+
+# Docker build stuff
+.env
+
+# Rust compiled libraries and programs
+target
+
+# Pytorch models
+#*.pt
+
+*.semanticdb
+*.bloop
+metals.sbt
+
+# Tensorboard logs
+tb-logger
+
+# Vim swap files
+*.swp
+
+# mml2pn Python prototype output
+scripts/model_pn.json
+
+
+#openai API key
+openai_key.txt
+huggingface_key.txt

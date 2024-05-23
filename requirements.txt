@@ -1,0 +1,11 @@
+fastparquet
+matplotlib
+numpy
+pandas
+pyarrow
+python-dateutil
+pytorch-ignite
+tensorboard
+torch
+torchvision
+tqdm
