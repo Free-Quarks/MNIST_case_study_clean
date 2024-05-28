@@ -218,7 +218,7 @@ if __name__ == "__main__":
         pl2.set_ylabel('Frequency')
     
     
-    plt.show()
+    plt.savefig('./MNIST_test_case/figs/KLD_hists.pdf', bbox_inches='tight')
 
 
     # parallelizing the inner loop for speed ups
