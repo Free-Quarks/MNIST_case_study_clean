@@ -7,10 +7,11 @@ from torch.utils.data import DataLoader
 from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
 from ignite.metrics import Accuracy, Loss
 from ignite.contrib.handlers import TensorboardLogger, global_step_from_engine
+from ignite.handlers.tensorboard_logger import OutputHandler
 
 # config
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MAX_EPOCHS = 1
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+MAX_EPOCHS = 5
 BATCH_SIZE = 128
 LOG_ITER = 75
 
@@ -70,22 +71,24 @@ def log_training_results(trainer):
 # Define a Tensorboard logger
 tb_logger = TensorboardLogger(log_dir="./tb-logger")
 
-# Attach handler to plot trainer's loss every 75 iterations
-tb_logger.attach_output_handler(
+tb_logger.attach(
     trainer,
-    event_name=Events.ITERATION_COMPLETED(every=LOG_ITER),
-    tag="training",
-    output_transform=lambda loss: {"batch_loss": loss},
+    log_handler=OutputHandler(
+        tag="training",
+        metric_names=["accuracy", "loss"],
+        global_step_transform=global_step_from_engine(trainer)
+    ),
+    event_name=Events.EPOCH_COMPLETED
 )
 
 # Attach handler for plotting both evaluators' metrics after every epoch completes  
-tb_logger.attach_output_handler(
-    train_evaluator,
-    event_name=Events.EPOCH_COMPLETED,
-    tag="training",
-    metric_names="all",
-    global_step_transform=global_step_from_engine(trainer),
-)
+#tb_logger.attach_output_handler(
+#    train_evaluator,
+#    event_name=Events.EPOCH_COMPLETED,
+#    tag="training",
+#    metric_names="all",
+#    global_step_transform=global_step_from_engine(trainer),
+#)
 
 ### run trainer ###
 trainer.run(train_loader_9less, max_epochs=MAX_EPOCHS)

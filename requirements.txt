@@ -8,4 +8,5 @@ pytorch-ignite
 tensorboard
 torch
 torchvision
+torch_tb_profiler
 tqdm
