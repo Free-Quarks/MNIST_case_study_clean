@@ -2,15 +2,14 @@ import torch
 from torch import nn
 from torchvision.models import resnet18
 from train import DatasetWrapper
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 
 # config
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # 'cuda:0' if only one gpu
-MAX_EPOCHS = 4
+MAX_EPOCHS = 5
 BATCH_SIZE = 128
-LOG_ITER = 75
-
+LR_RATE = 3e-4
 
 # define resnet18 model
 class R18(nn.Module):    
@@ -24,22 +23,23 @@ class R18(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-
 # import the data
 train_dataset_9less = torch.load('./dataset/MNIST/modified/train_dataset_9less.pt')
 train_dataset_9 = torch.load('./dataset/MNIST/modified/train_dataset_9.pt')
+train_dataset_all = ConcatDataset([train_dataset_9less, train_dataset_9])
 
 # load the data
 train_loader_9less = DataLoader(dataset=train_dataset_9less, batch_size=BATCH_SIZE, shuffle=True)
 train_loader_9 = DataLoader(dataset=train_dataset_9, batch_size=BATCH_SIZE, shuffle=True)
+train_loader_all = DataLoader(dataset=train_dataset_all, batch_size=BATCH_SIZE, shuffle=True)
 
 # initialize model and parallelization across GPU's
 model = R18()
-model = torch.nn.DataParallel(model)
+#model = torch.nn.DataParallel(model)
 model.to(DEVICE)
 
 # set up optmiizer and loss function
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
+optimizer = torch.optim.Adam(model.parameters(), lr=LR_RATE)
 criterion = nn.CrossEntropyLoss()
 
 # set up tensorboard writer
