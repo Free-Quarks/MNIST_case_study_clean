@@ -2,9 +2,9 @@ fastparquet
 matplotlib
 numpy
 pandas
+protobuf==3.20
 pyarrow
 python-dateutil
-pytorch-ignite
 tensorboard
 torch
 torchvision
