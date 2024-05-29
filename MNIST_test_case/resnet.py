@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 # config
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # 'cuda:0' if only one gpu
-MAX_EPOCHS = 7
+MAX_EPOCHS = 4
 BATCH_SIZE = 128
 LOG_ITER = 75
 
@@ -39,7 +39,7 @@ model = torch.nn.DataParallel(model)
 model.to(DEVICE)
 
 # set up optmiizer and loss function
-optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
 criterion = nn.CrossEntropyLoss()
 
 # set up tensorboard writer
@@ -49,7 +49,7 @@ for epoch in range(MAX_EPOCHS):
     model.train()
     running_loss = 0.0
 
-    for i, (inputs, labels) in enumerate(train_loader_9):
+    for i, (inputs, labels) in enumerate(train_loader_9less):
         inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
 
         optimizer.zero_grad()
@@ -62,7 +62,7 @@ for epoch in range(MAX_EPOCHS):
         running_loss += loss.item()
 
         if i % 10 == 9:  # Print every 10 batches
-            print(f'Epoch [{epoch+1}/{MAX_EPOCHS}], Step [{i+1}/{len(train_loader_9)}], Loss: {running_loss / 10:.4f}')
+            print(f'Epoch [{epoch+1}/{MAX_EPOCHS}], Step [{i+1}/{len(train_loader_9less)}], Loss: {running_loss / 10:.6f}')
             running_loss = 0.0
 
 writer.flush()
