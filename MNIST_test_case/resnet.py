@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torchvision.models import resnet18
-from train import DatasetWrapper
+from train import DatasetWrapper # need this implicitly, i know it upsets linters
 from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 
