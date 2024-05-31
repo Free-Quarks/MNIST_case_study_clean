@@ -1,7 +1,7 @@
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.kl import kl_divergence
-from torch.utils.data import ConcatDataset
+from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 import pandas as pd
 from train import DatasetWrapper, INPUT_DIM
@@ -136,23 +136,40 @@ def diversify_data_precomputed(original_data, new_data, percent, diversity_matri
         encoding_model.to(DEVICE)
         encoding_model.eval() 
 
+        """ original_data_loader = DataLoader(dataset=original_data, batch_size=128, shuffle=False) # batch the data
+        removal_list = []
+        for batch_i, (data, _) in enumerate(original_data_loader):
+            mu1, logvar1 = encoding_model.encode(data.view(data.shape[0], INPUT_DIM).to(DEVICE))
+            gaussian_1 = MultivariateNormal(mu1.to(DEVICE), torch.diagflat(torch.exp(logvar1)).to(DEVICE))
+            klds = []
+            for batch_j, (data1, _)  in enumerate(original_data_loader):
+                if batch_j > batch_i:
+                    mu, logvar = encoding_model.encode(data1.view(data1.shape[0], INPUT_DIM).to(DEVICE))
+                    gaussian = MultivariateNormal(mu.to(DEVICE), torch.diagflat(torch.exp(logvar)).to(DEVICE))
+                    kld_batch = kl_divergence(gaussian, gaussian_1).cuda().item() # not working in batches...
+                    klds = klds + kld_batch
+            if min(klds) < MIN_KLD_THRESHOLD:
+                removal_list.append(1)
+            if len(removal_list) == num_of_new_data:
+                break
+            print(f"number of points found: {len(removal_list)} out of {num_of_new_data}") """
+
         # find list of indicies of points that are similar, similar being min KLD below threshold
         removal_list = []
-        original_data.to(DEVICE)
-        for i, (data, _) in tqdm(enumerate(original_data)):
-            mu1, logvar1 = encoding_model.encode(data.view(1, INPUT_DIM))
-            gaussian_1 = MultivariateNormal(mu1, torch.diagflat(torch.exp(logvar1)))
+        for i, (data, _) in enumerate(original_data):
+            mu1, logvar1 = encoding_model.encode(data.view(1, INPUT_DIM).to(DEVICE))
+            gaussian_1 = MultivariateNormal(mu1.to(DEVICE), torch.diagflat(torch.exp(logvar1)).to(DEVICE))
             klds = []
             for j, (data1, _)  in enumerate(original_data):
                 if j > i:
-                    mu, logvar = encoding_model.encode(data1.view(1, INPUT_DIM))
-                    gaussian = MultivariateNormal(mu, torch.diagflat(torch.exp(logvar)))
+                    mu, logvar = encoding_model.encode(data1.view(1, INPUT_DIM).to(DEVICE))
+                    gaussian = MultivariateNormal(mu.to(DEVICE), torch.diagflat(torch.exp(logvar)).to(DEVICE))
                     klds.append(kl_divergence(gaussian, gaussian_1).cuda().item())
             if min(klds) < MIN_KLD_THRESHOLD:
                 removal_list.append(i)
             if len(removal_list) == num_of_new_data:
                 break
-
+            print(f"number of points found: {len(removal_list)} out of {num_of_new_data}")
         # remove the similar points
         removal_list.sort(reverse=True)
         for i in removal_list:
