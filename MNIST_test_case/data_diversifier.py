@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.kl import kl_divergence
 from torch.utils.data import ConcatDataset, DataLoader
@@ -6,6 +7,10 @@ from tqdm import tqdm
 import pandas as pd
 from train import DatasetWrapper, INPUT_DIM
 import time
+from scipy.stats import multivariate_normal
+import numpy as np
+from statistics import mean, stdev
+import os
 
 # config
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -77,7 +82,7 @@ def diversify_data(original_data, new_data, percent, maintain_size=True):
         return diversified_data
 
 
-def diversify_data_precomputed(original_data, new_data, percent, diversity_matrix ,maintain_size=True):
+def diversify_data_precomputed(original_data, new_data, percent, diversity_matrix, maintain_size=True):
     """
     This function will take in two dataset and diversify the original with data from the second. 
     Using KLD as a metric of their encoding from a previously trained VAE encoder. This assumes the diversity
@@ -136,40 +141,78 @@ def diversify_data_precomputed(original_data, new_data, percent, diversity_matri
         encoding_model.to(DEVICE)
         encoding_model.eval() 
 
-        """ original_data_loader = DataLoader(dataset=original_data, batch_size=128, shuffle=False) # batch the data
-        removal_list = []
-        for batch_i, (data, _) in enumerate(original_data_loader):
-            mu1, logvar1 = encoding_model.encode(data.view(data.shape[0], INPUT_DIM).to(DEVICE))
-            gaussian_1 = MultivariateNormal(mu1.to(DEVICE), torch.diagflat(torch.exp(logvar1)).to(DEVICE))
-            klds = []
-            for batch_j, (data1, _)  in enumerate(original_data_loader):
-                if batch_j > batch_i:
-                    mu, logvar = encoding_model.encode(data1.view(data1.shape[0], INPUT_DIM).to(DEVICE))
-                    gaussian = MultivariateNormal(mu.to(DEVICE), torch.diagflat(torch.exp(logvar)).to(DEVICE))
-                    kld_batch = kl_divergence(gaussian, gaussian_1).cuda().item() # not working in batches...
-                    klds = klds + kld_batch
-            if min(klds) < MIN_KLD_THRESHOLD:
-                removal_list.append(1)
-            if len(removal_list) == num_of_new_data:
-                break
-            print(f"number of points found: {len(removal_list)} out of {num_of_new_data}") """
+        kl_loss = nn.KLDivLoss(reduction="batchmean")
 
-        # find list of indicies of points that are similar, similar being min KLD below threshold
+        # now to try out the pointwise KLDloss to see how much faster it is. we will convert each gaussian into a 10x10 matrix representing the distribution. This will be done by using np.linspace to constuct a 10 dimensional vector for each variate in the gaussian (10). The span of the linspace will be dependent on the covariance / stdev of that given dimensionality since our covariance matrix is diagonal, the is essentially decomposing each 10-variate gaussian into 10 sub gaussians, quantizing them and then calculating the pointwise KLD to hopefully be more efficient. 
+        
+        # first preprocess the gaussians into quantized variants
+        # this takes about 150 seconds on kraken, check first if precomputed exists
+        if os.path.exists('./MNIST_test_case/saved_distributions/gaussian_data_quant.parquet.snappy'):
+            print("Found pre-computed quantized gaussians")
+            df_gaussian_data = pd.read_parquet('./MNIST_test_case/saved_distributions/gaussian_data_quant.parquet.snappy').to_numpy()
+        else:
+            print("Quantizing encoded gaussians")
+            gaussian_data = []
+            for i, (data, label) in tqdm(enumerate(original_data)):
+                mu1, logvar1 = encoding_model.encode(data.view(1, INPUT_DIM).to(DEVICE))
+                stdev1 = 0.5*torch.exp(logvar1)
+                mu1, stdev1 = mu1.cpu(), stdev1.cpu()
+                quant_gaussian = []
+                row_sum = [] # need for normalizing the matrix required for correct KLD's
+                for l in range(len(mu1[0])):
+                    # set domain out to 2x stdev from mean
+                    min_x = mu1[0][l]-2*stdev1[0][l]
+                    max_x = mu1[0][l]+2*stdev1[0][l]
+                    x = np.linspace(min_x, max_x, 10)
+                    y = multivariate_normal.pdf(x, mean=mu1[0][l], cov=stdev1[0][l]**2)
+                    quant_gaussian.append(y)
+                    row_sum.append(sum(y))
+                total_sum = sum(row_sum)
+                # normalize the matrix
+                normalized_quant_gaussian = []
+                for row in quant_gaussian:
+                    normalized_row = []
+                    for element in row:
+                        normalized_row.append(element/total_sum)
+                    normalized_quant_gaussian.append(normalized_row)
+
+                gaussian_data.append((normalized_quant_gaussian, label))
+            
+            df_gaussian_data = pd.DataFrame(data=gaussian_data)
+            df_gaussian_data.to_parquet('./MNIST_test_case/saved_distributions/gaussian_data_quant.parquet.snappy')
+            df_gaussian_data = pd.read_parquet('./MNIST_test_case/saved_distributions/gaussian_data_quant.parquet.snappy').to_numpy()
+            
+        # push data to GPU
+        tf_gaussian_data = []
+        for (gaussian, label) in df_gaussian_data:
+            cleaned_gaussian = []
+            for entry in gaussian:
+                cleaned_gaussian.append(entry.tolist())
+            cleaned_gaussian = np.array(cleaned_gaussian)
+            tf_gaussian = torch.tensor(cleaned_gaussian).to(DEVICE)
+            tf_label = torch.tensor(label).to(DEVICE)
+            tf_gaussian_data.append((tf_gaussian, tf_label))
+        
+        # now to calculate the KLD for one triangle of the matrix and remove points below a threshold
+        # need to reevaluate what a good threshold is the for the data. 
         removal_list = []
-        for i, (data, _) in enumerate(original_data):
-            mu1, logvar1 = encoding_model.encode(data.view(1, INPUT_DIM).to(DEVICE))
-            gaussian_1 = MultivariateNormal(mu1.to(DEVICE), torch.diagflat(torch.exp(logvar1)).to(DEVICE))
+        for i, (gaussian, _) in enumerate(tf_gaussian_data):
+            s=time.time()
             klds = []
-            for j, (data1, _)  in enumerate(original_data):
+            for j, (gaussian_1, _)  in enumerate(tf_gaussian_data):
                 if j > i:
-                    mu, logvar = encoding_model.encode(data1.view(1, INPUT_DIM).to(DEVICE))
-                    gaussian = MultivariateNormal(mu.to(DEVICE), torch.diagflat(torch.exp(logvar)).to(DEVICE))
-                    klds.append(kl_divergence(gaussian, gaussian_1).cuda().item())
+                    klds.append(kl_loss(gaussian.log(), gaussian_1).cuda().item())
+            print(f"mean: {mean(klds)}")
+            print(f"stdev: {stdev(klds)}")
+            print(f"min KLD: {min(klds)}")
             if min(klds) < MIN_KLD_THRESHOLD:
                 removal_list.append(i)
             if len(removal_list) == num_of_new_data:
                 break
             print(f"number of points found: {len(removal_list)} out of {num_of_new_data}")
+            e=time.time()
+            print(f"{e-s}")
+        
         # remove the similar points
         removal_list.sort(reverse=True)
         for i in removal_list:
