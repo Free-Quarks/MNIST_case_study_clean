@@ -11,4 +11,5 @@ torcheval
 torchvision
 torch_tb_profiler
 tqdm
+transformers
 scipy
