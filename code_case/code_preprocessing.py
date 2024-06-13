@@ -1,7 +1,10 @@
+from transformers import AutoModel, AutoTokenizer
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 import os
+
+# run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
 def preprocess_tokenized(directory):
     """
@@ -13,11 +16,27 @@ def preprocess_tokenized(directory):
     Returns:
         dataset (torch.dataset): a dataset of processed code
     """
+    # initialize encoder for tokenization
+    checkpoint = "Salesforce/codet5p-110m-embedding"
+    device = "cuda:0"  # for GPU usage or "cpu" for CPU usage
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
 
+    # first we read in and encode all the files in the directory
+    file_encodings = []
     walker = os.walk(directory)
-    for _root, _dirs, files in walker:
+    for root, _dirs, files in walker:
         for file in files:
-            print("temp")
+            file_path = root+"/"+file
+            file_content = ""
+            with open(file_path, 'r') as file:
+                file_content = file.read()
+                file.close()
+
+            # not with the truncation=True argument set as is, this will truncate larger code files to the max possible size, 512 tokens. So any 512 token inputs are likely truncated. 
+            file_encoding = tokenizer.encode(file_content, truncation=True, return_tensors="pt").to(device)
+            print(file_encoding.size())
+            file_encodings.append(file_encoding)
+            
 
     dataset = []
     return dataset
@@ -35,3 +54,8 @@ def preprocess_tree(directory):
 
     dataset = []
     return dataset
+
+if __name__ == "__main__":
+    directory = "./dataset/test_code"
+    dataset = preprocess_tokenized(directory)
+    print(dataset)
