@@ -23,6 +23,36 @@ class ListDatasetWrapper(Dataset):
         data = self.data_list[idx]
         return data
 
+# Class for storing info about each node in the tree, idx is inherited from parent for atomic nodes
+class NodeToken:
+    def __init__(self):
+        self.type = "temp"
+        self.idx = 0
+        self.name = None
+        self.body = None
+        self.line = None
+        self.tokens = None
+
+    def __eq__(self, other):
+        if isinstance(other, NodeToken):
+            return self.type == other.type and self.body == other.body and self.idx == other.idx
+        return False
+    
+    def __repr__(self):
+        return f"type: {self.type}, idx: {self.idx}"
+    def __str__(self):
+        return f"type: {self.type}, idx: {self.idx}"
+
+# class for storing information about each edge in the tree
+class EdgeToken:
+    def __init__(self):
+        self.src = 0
+        self.tgt = 0
+
+    def __eq__(self, other):
+        if isinstance(other, EdgeToken):
+            return self.src == other.src and self.tgt == other.tgt
+        return False
 
 def preprocess_tokenized(directory):
     """
@@ -57,6 +87,41 @@ def preprocess_tokenized(directory):
             
     # wrap our list into a dataset
     dataset = ListDatasetWrapper(file_encodings)
+    return dataset
+
+def preprocess_tree(directory):
+    """
+    This function takes in the directory of the function networks to be processed into a dataset of code trees. Each node will have a subet of tokens and the feature vector for that node will come from the embedding model we are using. 
+
+    Args:
+        directory (string): the string of the directory of function networks to be processed
+    Returns:
+        dataset (Dataset): a dataset of processed code
+    """
+    # There are 3 different aspects of information we want to encode in each node:
+    #       1) The embedding vector of the tokens in the node
+    #       2)** The positional encodings using eigenvectors of the Laplacian of the graph or other options
+    #       3) The node type encoding as well, function, literal, etc. 
+
+    # 1) and 2) will be added together as is usual for the embedding and positional information in transformer architectures
+    # 3) is still being thought about, but perhaps will be a seperate dimension of the feature space. 
+    # ** 2) can only be consturcted after the entire graph has been constructed since it encodes relative locational information
+
+    function_type_list = ["FUNCTION", "PREDICATE","LANGUAGE_PRIMITIVE","ABSTRACT","EXPRESSION","LITERAL","IMPORTED","IMPORTED_METHOD"]
+
+    for filename in os.listdir(directory):
+        f = os.path.join(directory, filename)
+
+        with open(f,'r') as fn_file:
+            fn_data = json.load(fn_file)
+            fn_file.close()
+        
+        for i, obj in enumerate(fn_data['modules'][0]['fn_array']):
+            t = NodeToken()
+            t.type = obj['b'][0]['function_type']
+            t.idx = i+1
+
+    dataset = []
     return dataset
 
 
@@ -105,26 +170,6 @@ def code_2_fn(code_directory, fn_directory, url):
         except:
             print(f"{f} failed to process\n")
 
-def preprocess_tree(directory):
-    """
-    This function takes in the directory of the code to be processed into a dataset of code trees. Each node will have a subet of tokens and the feature vector for that node will come from the embedding model we are using. 
-
-    Args:
-        directory (string): the string of the directory of code to be processed
-    Returns:
-        dataset (Dataset): a dataset of processed code
-    """
-    # There are 3 different aspects of information we want to encode in each node:
-    #       1) The embedding vector of the tokens in the node
-    #       2) The positional encodings using eigenvectors of the Laplacian of the graph or other options
-    #       3) The node type embedding as well, function, literal, etc. 
-
-    # 1) and 2) will be added together as is usual for the embedding and positional information in transformer architectures
-    # 3) is still being thought about, but perhaps will be a seperate dimension of the feature space. 
-
-
-    dataset = []
-    return dataset
 
 def dictionary_to_gromet_json(
     o, fold_level=5, indent=4, level=0, parent_key=""
