@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader, Dataset
 import os
 import requests
 import json
+import networkx as nx
+from enum import Enum, auto
 
 # run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
@@ -23,36 +25,47 @@ class ListDatasetWrapper(Dataset):
         data = self.data_list[idx]
         return data
 
+# Enum for the node types
+class NodeType(Enum):
+    MODULE = auto()
+    FUNCTION = auto()
+    PREDICATE = auto()
+    LANGUAGE_PRIMITIVE = auto()
+    ABSTRACT = auto()
+    EXPRESSION = auto()
+    LITERAL = auto()
+    IMPORTED = auto()
+    IMPORTED_METHOD = auto()
+    TEMP = auto()
+
+    @staticmethod
+    def from_string(s: str):
+        try:
+            return NodeType[s.upper()]
+        except KeyError:
+            raise ValueError(f"'{s}' is not a valid NodeType")
+
 # Class for storing info about each node in the tree, idx is inherited from parent for atomic nodes
 class NodeToken:
     def __init__(self):
-        self.type = "temp"
-        self.idx = 0
-        self.name = None
-        self.body = None
-        self.line = None
-        self.tokens = None
+        self.type = NodeType.TEMP # node type
+        self.idx = 0 # idx in the fn_array, 0 if the source is in the top level part
+        self.name = None # name if it has one (only functions)
+        self.bf = False # boolean on if there is substructure
+        self.tokens = None # tokens sliced from source code
 
     def __eq__(self, other):
         if isinstance(other, NodeToken):
-            return self.type == other.type and self.body == other.body and self.idx == other.idx
+            return self.type == other.type and self.bf == other.bf and self.idx == other.idx
         return False
+
+    def __hash__(self):
+        return hash((self.name, self.type, self.idx))
     
     def __repr__(self):
         return f"type: {self.type}, idx: {self.idx}"
     def __str__(self):
         return f"type: {self.type}, idx: {self.idx}"
-
-# class for storing information about each edge in the tree
-class EdgeToken:
-    def __init__(self):
-        self.src = 0
-        self.tgt = 0
-
-    def __eq__(self, other):
-        if isinstance(other, EdgeToken):
-            return self.src == other.src and self.tgt == other.tgt
-        return False
 
 def preprocess_tokenized(directory):
     """
@@ -89,12 +102,13 @@ def preprocess_tokenized(directory):
     dataset = ListDatasetWrapper(file_encodings)
     return dataset
 
-def preprocess_tree(directory):
+def preprocess_tree(fn_directory, code_directory):
     """
     This function takes in the directory of the function networks to be processed into a dataset of code trees. Each node will have a subet of tokens and the feature vector for that node will come from the embedding model we are using. 
 
     Args:
-        directory (string): the string of the directory of function networks to be processed
+        fn_directory (string): the string of the directory of function networks to be processed
+        code_directory (string): the string of the directory of the source code, will be used to collect and embbed tokens
     Returns:
         dataset (Dataset): a dataset of processed code
     """
@@ -107,23 +121,137 @@ def preprocess_tree(directory):
     # 3) is still being thought about, but perhaps will be a seperate dimension of the feature space. 
     # ** 2) can only be consturcted after the entire graph has been constructed since it encodes relative locational information
 
-    function_type_list = ["FUNCTION", "PREDICATE","LANGUAGE_PRIMITIVE","ABSTRACT","EXPRESSION","LITERAL","IMPORTED","IMPORTED_METHOD"]
+    tree_list = []
+    # read in the fn's
+    for filename in os.listdir(fn_directory):
+        
+        G = nx.Graph() # initialize undirected graph
 
-    for filename in os.listdir(directory):
-        f = os.path.join(directory, filename)
+        # add top level module node
+        mod = NodeToken()
+        mod.type = NodeType.MODULE
+        G.add_node(mod)
 
+        # find and read in the matching source code file
+        code_file_id = filename.split("-")[2].split(".")[0]
+        for codename in os.listdir(code_directory):
+            if codename.split("-")[2].split(".")[0] == code_file_id:
+                c = os.path.join(code_directory, codename)
+                with open(c, 'r', encoding='utf-8') as code_file:
+                    code_data = code_file.read()
+                    code_file.close()
+
+        # load the fn as json dict
+        f = os.path.join(fn_directory, filename)
         with open(f,'r') as fn_file:
             fn_data = json.load(fn_file)
             fn_file.close()
         
-        for i, obj in enumerate(fn_data['modules'][0]['fn_array']):
+
+        #---- Constuct the tree ----#
+        # This is done in 3 passes, one to get top executable level, one to get the top fn_array level, and 
+        # one last pass to fill in subsructure and add edges to join referenced entries
+
+        # 1st pass, construct first layer of tree for executable level
+        module_bf = fn_data['modules'][0]['fn']['bf']
+        for i, ent in enumerate(module_bf):
             t = NodeToken()
-            t.type = obj['b'][0]['function_type']
-            t.idx = i+1
+            t.type = NodeType.from_string(ent['function_type'])
+            if 'name' in ent:
+                t.name = ent['name']
+            if 'metadata' in ent:
+                t.tokens = get_tokens(code_data, fn_data, ent['metadata'])
+            if 'body' in ent:
+                t.bf = True
+                t.idx = ent['body']
+            G.add_node(t)
+            G.add_edge(mod, t)
+
+
+
+        # 2nd pass, construct first layer of tree for fn_array level
+        fn_array = fn_data['modules'][0]['fn_array']
+        for j, obj in enumerate(fn_array):
+            t = NodeToken()
+            t.type = NodeType.from_string(obj['b'][0]['function_type'])
+            t.idx = j+1
+            if 'bf' in obj:
+                t.bf = True
+            # now check to make sure it wasn't already created in executable pass
+            novel_node = True
+            for node in list(G):
+                if node == t:
+                    novel_node = False
+                    break
+            if novel_node:
+                if 'name' in obj['b'][0]:
+                    t.name = obj['b'][0]['name']
+                if 'metadata' in obj['b'][0]:
+                    t.tokens = get_tokens(code_data, fn_data, obj['b'][0]['metadata'])
+                G.add_node(t)
+                G.add_edge(mod, t)
+        
+        # 3rd pass now that we have all the top level objects it is time to add the substructure that 
+        # exists in the expressions, predicates, and functions 
+        for node in list(G):
+            if node.bf:
+                bf_list = fn_array[node.idx - 1]['bf']
+                for ent in bf_list:
+                    # construct node, check if novel, add node and edge
+                    t = NodeToken()
+                    t.type = NodeType.from_string(ent['function_type'])
+                    if 'body' in ent:
+                        t.idx = ent['body']
+                        # if the node have substructure the parent has already been created, so we simply connect it
+                        t.bf = True
+                        # find the node and add edge once found
+                        for old_node in list(G):
+                            if old_node == t:
+                                G.add_edge(node, old_node)
+                                break
+                    else:
+                        t.idx = node.idx
+                        if 'name' in ent:
+                            t.name = ent['name']
+                        if 'metadata' in ent:
+                            t.tokens = get_tokens(code_data, fn_data, ent['metadata'])
+                        G.add_node(t)
+                        G.add_edge(node, t)
+        
+        tree_list.append(G)
+
 
     dataset = []
     return dataset
 
+def get_tokens(code_data, fn_data, meta_data_idx):
+    """
+    This function takes in the code directory and the fn_file_name to match the code file to the fn file. This function
+    then returns the tokens for the correcsponding line number given as well. 
+
+    Args:
+        code_data (string): The source code to slice from for tokens
+        fn_data (string): The fn data to pull the line the splice from
+        meta_data_idx (integer): The idx into the metadata which will contain the line number to splice the tokens with
+
+    Return: 
+        tokens: (string): The string of the tokens from the line to be embedded as a feature for the node. 
+    """
+    tokens = ""
+    return tokens
+
+def encode_graph(graph):
+    """
+    This function takes in the human-readable graph and will create a new graph where each node is encoded with our given feature choices. This function will also include the positional encoding in the graph, so it will be ready to be fed into GNN right away. 
+
+    Args:
+        graph (networkx graph): This is the input human readable graph with NodeToken objects as the nodes
+    
+    Return:
+        encoded_graph (networkx graph): This is the encoded version of the human readable graph with positional encoding as well.
+    """
+    encode_graph = graph
+    return encode_graph
 
 def code_2_fn(code_directory, fn_directory, url):
     """
