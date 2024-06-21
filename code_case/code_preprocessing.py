@@ -2,11 +2,13 @@ from transformers import AutoModel, AutoTokenizer
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from torch_geometric.utils import from_networkx
 import os
 import requests
 import json
 import networkx as nx
 from enum import Enum
+import numpy as np
 
 # run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
@@ -307,10 +309,40 @@ def encode_graph(graph):
 
     # one thing to do is we need to replace LANGUAGE_PRIMITIVE tokens with new ones based on their name. Their metadata references
     # include their arguments, which should be taken care of by the tokens for their expression
+    encode_graph = from_networkx(graph)
+
+    encode_graph.x1 = torch.tensor(np.array([encode_node(node, graph) for node in list(graph)]), dtype=torch.float)
+    encode_graph.x2 = torch.tensor(np.array([np.eye(10)[node.type.value] for node in list(graph)]), dtype=torch.int)
 
 
-    encode_graph = graph
     return encode_graph
+
+def encode_node(node, graph):
+    """
+    This takes in a node of type NodeType and converts it to an encoding vector. This has two stages, the first
+    being the construction of the embedding vector of the tokens and the second being the addition of positional encodings
+    to the embedding vector. 
+
+    Args:
+        node (NodeType): The input node we are encoding
+        graph (networkx): The graph the node came from. This is needed for positional encodings. 
+    
+    Returns:
+        encoded_node (list): This is the encode node, both the embedding and position information. 
+    """
+
+    # initialize encoder for tokenization
+    checkpoint = "Salesforce/codet5p-110m-embedding"
+    device = "cuda:0"  # for GPU usage or "cpu" for CPU usage
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
+
+    # touch up on primitives for bettering embedding
+
+
+    node_encoding = tokenizer.encode(file_content, truncation=True, return_tensors="pt").to(device)    
+
+    encoded_node = np.zeros(256)
+    return encoded_node
 
 def code_2_fn(code_directory, fn_directory, url):
     """
@@ -451,6 +483,5 @@ if __name__ == "__main__":
     directory = "./dataset/test_code"
     fn_directory = "./dataset/test_fn"
     dataset = preprocess_tokenized(directory)
-    print(dataset)
     tree_dataset = preprocess_tree(fn_directory, code_directory=directory)
     print("done")
