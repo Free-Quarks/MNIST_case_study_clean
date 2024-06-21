@@ -6,7 +6,7 @@ import os
 import requests
 import json
 import networkx as nx
-from enum import Enum, auto
+from enum import Enum
 
 # run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
@@ -27,16 +27,16 @@ class ListDatasetWrapper(Dataset):
 
 # Enum for the node types
 class NodeType(Enum):
-    MODULE = auto()
-    FUNCTION = auto()
-    PREDICATE = auto()
-    LANGUAGE_PRIMITIVE = auto()
-    ABSTRACT = auto()
-    EXPRESSION = auto()
-    LITERAL = auto()
-    IMPORTED = auto()
-    IMPORTED_METHOD = auto()
-    TEMP = auto()
+    TEMP = 0
+    MODULE = 1
+    FUNCTION = 2
+    PREDICATE = 3
+    LANGUAGE_PRIMITIVE = 4
+    ABSTRACT = 5
+    EXPRESSION = 6
+    LITERAL = 7
+    IMPORTED = 8
+    IMPORTED_METHOD = 9
 
     @staticmethod
     def from_string(s: str):
@@ -63,9 +63,9 @@ class NodeToken:
         return hash((self.name, self.type, self.idx))
     
     def __repr__(self):
-        return f"type: {self.type}, idx: {self.idx}"
+        return f"type: {self.type}, idx: {self.idx}, name: {self.name}, tokens: {self.tokens}"
     def __str__(self):
-        return f"type: {self.type}, idx: {self.idx}"
+        return f"type: {self.type}, idx: {self.idx}, name: {self.name}, tokens: {self.tokens}"
 
 def preprocess_tokenized(directory):
     """
@@ -153,19 +153,20 @@ def preprocess_tree(fn_directory, code_directory):
         # one last pass to fill in subsructure and add edges to join referenced entries
 
         # 1st pass, construct first layer of tree for executable level
-        module_bf = fn_data['modules'][0]['fn']['bf']
-        for i, ent in enumerate(module_bf):
-            t = NodeToken()
-            t.type = NodeType.from_string(ent['function_type'])
-            if 'name' in ent:
-                t.name = ent['name']
-            if 'metadata' in ent:
-                t.tokens = get_tokens(code_data, fn_data, ent['metadata'])
-            if 'body' in ent:
-                t.bf = True
-                t.idx = ent['body']
-            G.add_node(t)
-            G.add_edge(mod, t)
+        if 'bf' in fn_data['modules'][0]['fn']: # not all code has executable parts 
+            module_bf = fn_data['modules'][0]['fn']['bf']
+            for i, ent in enumerate(module_bf):
+                t = NodeToken()
+                t.type = NodeType.from_string(ent['function_type'])
+                if 'name' in ent:
+                    t.name = ent['name']
+                if 'metadata' in ent:
+                    t.tokens = get_tokens(code_data, fn_data, ent['metadata'])
+                if 'body' in ent:
+                    t.bf = True
+                    t.idx = ent['body']
+                G.add_node(t)
+                G.add_edge(mod, t)
 
 
 
@@ -194,7 +195,7 @@ def preprocess_tree(fn_directory, code_directory):
         # 3rd pass now that we have all the top level objects it is time to add the substructure that 
         # exists in the expressions, predicates, and functions 
         for node in list(G):
-            if node.bf:
+            if node.bf and 'bf' in fn_array[node.idx - 1]:
                 bf_list = fn_array[node.idx - 1]['bf']
                 for ent in bf_list:
                     # construct node, check if novel, add node and edge
@@ -220,24 +221,77 @@ def preprocess_tree(fn_directory, code_directory):
         
         tree_list.append(G)
 
+    """debugging print statements"""
+    # print("Printing full node list first")
+    # print("------------------")
+    # print(list(tree_list[0]))
+    # print("------------------")
+    # print("Printing sample node")
+    # print("------------------")
+    # print(list(tree_list[0])[3])
+    # print("------------------")
+    # print("Printing edge list")
+    # print("------------------")
+    # print(tree_list[0].edges.data())
+    # for node in list(tree_list[0]):
+    #     if node.type == NodeType.LANGUAGE_PRIMITIVE:
+    #         print("Primitive Node")
+    #         print(node)
+    #         print("----------")
+        
+    # now that we have the list of human readable trees, we now pass them to get encoded
+    encoded_trees = []
+    for tree in tree_list:
+        encoded_trees.append(encode_graph(tree))
 
-    dataset = []
+
+    # lastly we now convert this list of graphs into a proper pytorch dataset object 
+    dataset = encoded_trees
     return dataset
 
-def get_tokens(code_data, fn_data, meta_data_idx):
+def get_tokens(code_data, fn_data, metadata_idx):
     """
     This function takes in the code directory and the fn_file_name to match the code file to the fn file. This function
     then returns the tokens for the correcsponding line number given as well. 
 
     Args:
         code_data (string): The source code to slice from for tokens
-        fn_data (string): The fn data to pull the line the splice from
-        meta_data_idx (integer): The idx into the metadata which will contain the line number to splice the tokens with
+        fn_data (dict): The fn data to pull the line the splice from
+        metadata_idx (integer): The idx into the metadata which will contain the line number to splice the tokens with
 
     Return: 
         tokens: (string): The string of the tokens from the line to be embedded as a feature for the node. 
     """
-    tokens = ""
+
+    # for grabbing the tokens, if we are dealing with a function who's line_begin and line_end will 
+    # be different we will just grab the whole starting line. For objects who's start are and end
+    # are on the same line, we will slice by the start and end columns as well. 
+
+    metadata = fn_data['modules'][0]['metadata_collection'][metadata_idx-1][0] # also only grabbing first entry
+    if 'line_begin' in metadata:
+        line_begin = metadata['line_begin']
+        line_end = metadata['line_end']
+        line = "".join(code_data.splitlines(keepends=True)[line_begin - 1]) # oddly lines are base 1, columns are base 0
+    else:
+        try:
+            metadata = fn_data['modules'][0]['metadata_collection'][metadata_idx-1][1]
+            line_begin = metadata['line_begin']
+            line_end = metadata['line_end']
+            line = "".join(code_data.splitlines(keepends=True)[line_begin - 1]) # oddly lines are base 1, columns are base 0
+        except:
+            line_begin = 0
+            line_end = 1
+            line = "N/A"
+
+    if line_begin != line_end:
+        # we only grab the line_begin line
+        tokens = line
+    else:
+        # we now slice by column as well, weirdly base 0
+        col_begin = metadata['col_begin']
+        col_end = metadata['col_end']
+        tokens = line[col_begin:col_end]
+
     return tokens
 
 def encode_graph(graph):
@@ -250,6 +304,11 @@ def encode_graph(graph):
     Return:
         encoded_graph (networkx graph): This is the encoded version of the human readable graph with positional encoding as well.
     """
+
+    # one thing to do is we need to replace LANGUAGE_PRIMITIVE tokens with new ones based on their name. Their metadata references
+    # include their arguments, which should be taken care of by the tokens for their expression
+
+
     encode_graph = graph
     return encode_graph
 
@@ -390,7 +449,8 @@ def del_nulls(d):
 
 if __name__ == "__main__":
     directory = "./dataset/test_code"
+    fn_directory = "./dataset/test_fn"
     dataset = preprocess_tokenized(directory)
     print(dataset)
-    tree_dataset = preprocess_tree(directory)
-    print(tree_dataset)
+    tree_dataset = preprocess_tree(fn_directory, code_directory=directory)
+    print("done")
