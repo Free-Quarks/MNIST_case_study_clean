@@ -2,13 +2,14 @@ from transformers import AutoModel, AutoTokenizer
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torch_geometric.utils import from_networkx
+from torch_geometric.utils import from_networkx, to_scipy_sparse_matrix
 import os
 import requests
 import json
 import networkx as nx
 from enum import Enum
 import numpy as np
+import subprocess
 
 # run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
@@ -112,7 +113,7 @@ def preprocess_tree(fn_directory, code_directory):
         fn_directory (string): the string of the directory of function networks to be processed
         code_directory (string): the string of the directory of the source code, will be used to collect and embbed tokens
     Returns:
-        dataset (Dataset): a dataset of processed code
+        dataset (ListDatasetWrapper): a dataset of processed code
     """
     # There are 3 different aspects of information we want to encode in each node:
     #       1) The embedding vector of the tokens in the node
@@ -246,9 +247,10 @@ def preprocess_tree(fn_directory, code_directory):
     for tree in tree_list:
         encoded_trees.append(encode_graph(tree))
 
+    print(encoded_trees[0])
 
     # lastly we now convert this list of graphs into a proper pytorch dataset object 
-    dataset = encoded_trees
+    dataset = ListDatasetWrapper(encoded_trees)
     return dataset
 
 def get_tokens(code_data, fn_data, metadata_idx):
@@ -307,41 +309,91 @@ def encode_graph(graph):
         encoded_graph (networkx graph): This is the encoded version of the human readable graph with positional encoding as well.
     """
 
-    # one thing to do is we need to replace LANGUAGE_PRIMITIVE tokens with new ones based on their name. Their metadata references
-    # include their arguments, which should be taken care of by the tokens for their expression
-    encode_graph = from_networkx(graph)
-
-    encode_graph.x1 = torch.tensor(np.array([encode_node(node, graph) for node in list(graph)]), dtype=torch.float)
-    encode_graph.x2 = torch.tensor(np.array([np.eye(10)[node.type.value] for node in list(graph)]), dtype=torch.int)
-
-
-    return encode_graph
-
-def encode_node(node, graph):
-    """
-    This takes in a node of type NodeType and converts it to an encoding vector. This has two stages, the first
-    being the construction of the embedding vector of the tokens and the second being the addition of positional encodings
-    to the embedding vector. 
-
-    Args:
-        node (NodeType): The input node we are encoding
-        graph (networkx): The graph the node came from. This is needed for positional encodings. 
-    
-    Returns:
-        encoded_node (list): This is the encode node, both the embedding and position information. 
-    """
-
     # initialize encoder for tokenization
     checkpoint = "Salesforce/codet5p-110m-embedding"
     device = "cuda:0"  # for GPU usage or "cpu" for CPU usage
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
+    model = AutoModel.from_pretrained(checkpoint, trust_remote_code=True).to(device)
 
-    # touch up on primitives for bettering embedding
+    # one thing to do is we need to replace LANGUAGE_PRIMITIVE tokens with new ones based on their name. Their metadata references
+    # include their arguments, which should be taken care of by the tokens for their expression
+    encode_graph = from_networkx(graph)
 
+    encode_graph.x1 = torch.reshape(torch.tensor(np.array([encode_node(node, tokenizer, model) for node in list(graph)]), dtype=torch.float), (encode_graph.num_nodes, 256))
+    encode_graph.x2 = torch.tensor(np.array([np.eye(10)[node.type.value] for node in list(graph)]), dtype=torch.int)
 
-    node_encoding = tokenizer.encode(file_content, truncation=True, return_tensors="pt").to(device)    
+    encode_graph.pe = positional_encodings(graph)
 
-    encoded_node = np.zeros(256)
+    return encode_graph
+
+def positional_encodings(graph):
+    """
+    This takes in a networkc graph and computes the graph Laplacian and then the resulting eigenvectors and
+    values for the Laplacian matrix. These are then used to encoding positional information in the nodes of
+    the graph. 
+
+    Args:
+        graph (networkx): The graph from which we will compute the encodings
+
+    Returns:
+        positional_encoding_vec (tensor): The positional encodings for the nodes of the graph
+    """
+
+    # number of eignevectors we will use
+    k = 8
+
+    # compute the laplacian matrix
+    L = nx.laplacian_matrix(graph).todense()
+    
+    # Compute the eigenvalues and eigenvectors
+    _eigvals, eigvecs = torch.linalg.eigh(torch.tensor(L, dtype=torch.float32))
+    
+    # Select the top k eigenvectors as positional encodings
+    pe = eigvecs[:, 1:k+1]  # skip the first eigenvector (trivial solution)
+
+    return pe
+
+def encode_node(node, tokenizer, model):
+    """
+    This takes in a node of type NodeType and converts it to an encoding vector. This being the 
+    construction of the embedding vector of the tokens. This is a bit of touching up the tokens for 
+    abstracts and primitives since the metadata for them is either often missing or includes extra 
+    tokens.
+
+    Args:
+        node (NodeType): The input node we are encoding
+        tokenizer (AutoTokenizer): The model for indexing / vectorizing our tokens
+        model (AutoModel): The model to create the embedding vector for the tokenized sequences
+    
+    Returns:
+        encoded_node (tensor): This is the encode node, both the embedding and position information. 
+    """
+
+    # touch up on primitives for better embedding
+    if node.type == NodeType.LANGUAGE_PRIMITIVE or node.type == NodeType.ABSTRACT:
+        if node.name != None:
+            if node.name[0:3] == 'ast':
+                name_slice = node.name[4:]
+                if name_slice == 'Mult':
+                    node.tokens = "*"
+                elif name_slice == 'Add':
+                    node.tokens = "+"
+                elif name_slice == 'Sub':
+                    node.tokens = "-"
+                elif name_slice == "Eq":
+                    node.tokens = "="
+                elif name_slice == "USub":
+                    node.tokens = "-"
+            else:
+                node.tokens = node.name
+
+    if node.tokens != None:
+        inputs = tokenizer.encode(node.tokens, truncation=True, return_tensors="pt").to("cuda")  
+    else:
+        inputs = tokenizer.encode("None", truncation=True, return_tensors="pt").to("cuda")
+    
+    encoded_node = model(inputs).to("cpu").detach()
+
     return encoded_node
 
 def code_2_fn(code_directory, fn_directory, url):
