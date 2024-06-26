@@ -340,7 +340,7 @@ def positional_encodings(graph):
     """
 
     # number of eignevectors we will use
-    k = 8
+    k = 12
 
     # compute the laplacian matrix
     L = nx.laplacian_matrix(graph).todense()
