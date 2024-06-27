@@ -320,7 +320,7 @@ def encode_graph(graph):
     encode_graph = from_networkx(graph)
 
     encode_graph.x1 = torch.reshape(torch.tensor(np.array([encode_node(node, tokenizer, model) for node in list(graph)]), dtype=torch.float), (encode_graph.num_nodes, 256))
-    encode_graph.x2 = torch.tensor(np.array([np.eye(10)[node.type.value] for node in list(graph)]), dtype=torch.int)
+    encode_graph.x2 = torch.tensor(np.array([np.eye(10)[node.type.value] for node in list(graph)]), dtype=torch.float)
 
     encode_graph.pe = positional_encodings(graph)
 
