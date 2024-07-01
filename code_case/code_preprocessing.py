@@ -78,7 +78,7 @@ def preprocess_tokenized(directory):
     Args:
         directory (string): the string of the directory of the code to be processed
     Returns:
-        dataset (Dataset): a dataset of processed code
+        dataset (ListDatasetWrapper): a dataset of processed code
     """
     # initialize encoder for tokenization
     checkpoint = "Salesforce/codet5p-110m-embedding"
@@ -96,7 +96,9 @@ def preprocess_tokenized(directory):
                 file_content = file.read()
                 file.close()
 
-            # not with the truncation=True argument set as is, this will truncate larger code files to the max possible size, 512 tokens. So any 512 token inputs are likely truncated. 
+            # not with the truncation=True argument set as is, this will truncate larger code files to the max possible size, 512 tokens. So any 512 token inputs are truncated. Need a solution for this
+            print("-----------------------------")
+            print(file_path)
             file_encoding = tokenizer.encode(file_content, truncation=True, return_tensors="pt").to(device)
             print(file_encoding.size())
             file_encodings.append(file_encoding)
@@ -150,6 +152,9 @@ def preprocess_tree(fn_directory, code_directory):
             fn_data = json.load(fn_file)
             fn_file.close()
         
+
+        print("------------------")
+        print(f)
 
         #---- Constuct the tree ----#
         # This is done in 3 passes, one to get top executable level, one to get the top fn_array level, and 
@@ -247,7 +252,7 @@ def preprocess_tree(fn_directory, code_directory):
     for tree in tree_list:
         encoded_trees.append(encode_graph(tree))
 
-    print(encoded_trees[0])
+    print(encoded_trees[20])
 
     # lastly we now convert this list of graphs into a proper pytorch dataset object 
     dataset = ListDatasetWrapper(encoded_trees)
@@ -535,5 +540,7 @@ if __name__ == "__main__":
     directory = "./dataset/test_code"
     fn_directory = "./dataset/test_fn"
     dataset = preprocess_tokenized(directory)
+    print(dataset)
     tree_dataset = preprocess_tree(fn_directory, code_directory=directory)
+    print(tree_dataset)
     print("done")
