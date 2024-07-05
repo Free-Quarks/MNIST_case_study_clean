@@ -73,7 +73,7 @@ class NodeToken:
 def preprocess_tokenized(directory):
     """
     This function takes in the directory of the code that will be processed into a dataset of tokenized sequence inputs.
-    These will also be broken into the length of the contextual window required for our embedding model (600 tokens). 
+    These will also be broken into the length of the contextual window required for our embedding model (512 tokens). 
 
     Args:
         directory (string): the string of the directory of the code to be processed

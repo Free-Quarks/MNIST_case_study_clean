@@ -35,7 +35,7 @@ class MPNNLayer(MessagePassing):
 
 
 class GNNModel(torch.nn.Module):
-    def __init__(self, embed_dim, in_channels, hidden_channels, out_channels, node_classes, compressed_classes, uncompressed_graph_feature, graph_feature):
+    def __init__(self, embed_dim=256, in_channels=36, hidden_channels=36, out_channels=36, node_classes=10, compressed_classes=6, uncompressed_graph_feature=24, graph_feature=36):
         super(GNNModel, self).__init__()
         # graph encoder layers
         self.embed_contraction = nn.Linear(embed_dim, in_channels)
