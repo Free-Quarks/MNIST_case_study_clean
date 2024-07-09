@@ -409,7 +409,7 @@ def code_2_fn(code_directory, fn_directory, url):
     Args:
         code_directory (string): The directory of the source code to be walked over. [note: no ending backslash]
         fn_directory (string): The directory that the function networks will be written out to. [note: no ending backslash]
-        url (string): the url for our code2fn service
+        url (string): the url for our code2fn service api
     Returns:
         none: This function writes out to disk and doesn't have a return, unless it errors out
     """

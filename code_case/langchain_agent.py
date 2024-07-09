@@ -12,13 +12,16 @@ from langchain.pydantic_v1 import BaseModel, Field
 from langchain.tools import tool
 from typing import List
 
-# for rag specifically, chroma
+# for rag, specifically chroma
 import chromadb
 from chromadb import Documents, EmbeddingFunction
 from vector_db import ChromaCodet5pEmbedding, CHECKPOINT
 
 # generic
 import os
+
+# local
+from code_preprocessing import code_2_fn
 
 """
 The goal of this agent is the following:
@@ -78,13 +81,8 @@ if __name__ == "__main__":
         # this creates the agent, should be in langgraph
         agent_executor = create_react_agent(model, tools)
 
-        #model.bind_tools(tools)
-
         parser = JsonOutputParser(pydantic_object=RAGOutput)
         format_instructions = parser.get_format_instructions()
-
-        # defining the output parser, specific to openai
-        #parser = JsonOutputToolsParser()
 
         prompt_template = ChatPromptTemplate.from_messages([("system", "You are helpful assistant. {format_instructions}"),("human", "Can you find similar examples in the database to the following\n{query}")])
 
@@ -101,12 +99,9 @@ if __name__ == "__main__":
     if SEED_CODE_GENERATION_AGENT:
 
         model = ChatOpenAI(model="gpt-4o", temperature=0.7)
-        # testing it
-        # response = model.invoke([HumanMessage(content="Can you write a simple Python script to simulate covid spreading?")])
-        # print(response.content)
 
-        # we now need to construct a loop to iterate over a number of key words in the prompt, lower the temperature,
-        # and also perform output parsing of the results to collect write the scripts to disk properly. 
+        # number of full generation sequences to run
+        num_runs = 4 # each run should make 200-248 code scripts depending on fail rate, 248 is no failures
 
         # common key words
         programmer_type = ["college student", "software engineer"]
@@ -120,22 +115,57 @@ if __name__ == "__main__":
         model_list = ["SIR", "SEIR", "SEIRD", "SIDARTHE", "SEIRHD"]
         method_list = ["Euler", "odeint", "RK2", "RK3", "RK4"]
 
+        # agentic and network
+        model_property = ["vaccination", "stratification by age", "stratification by sex"]
 
         # defining the output parser
         parser = JsonOutputParser(pydantic_object=CodeOutput)
         format_instructions = parser.get_format_instructions()
 
-        # agentic and network
-        model_properity = ["vaccination", "stratification by age", "stratification by sex"]
-
         compart_prompt_template = ChatPromptTemplate.from_messages([("human", "Write a {model_type} model {code_qualifier}. It should be based on {model_list} and use the {method_list}."), ("system", "You are a {programmer_type} that writes python scripts to simulate covid based on how the user requests and {format_instructions}")])
 
         abm_prompt_template = ChatPromptTemplate.from_messages([("human", "Write a {model_type} model {code_qualifier}. It should include {model_property}"), ("system", "You are a {programmer_type} that writes python scripts to simulate covid based on how the user requests. {format_instructions}")])
 
-        # invoke the chain
-
         chain = compart_prompt_template | model | parser
 
-        result = chain.invoke({"model_type": model_type[0], "code_qualifier": code_qualifier[0], "model_list": model_list[0], "method_list": method_list[0], "programmer_type": programmer_type[0], "format_instructions": format_instructions})
+        compart_counter = 0
+        abm_counter = 0
 
-        print(result)
+        code_directory = "./dataset/new_test_code"
+        fn_directory = "./dataset/new_test_fn"
+        for _i in range(num_runs):
+            for programmer in programmer_type:
+                for qualifier in code_qualifier:
+                    for model in model_type:
+                        if model == "compartimental":
+                            for submodel in model_list:
+                                for method in method_list:
+                                    compart_counter += 1
+                                    try:
+                                        result = chain.invoke({"model_type": model, "code_qualifier": qualifier, "model_list": submodel, "method_list": method, "programmer_type": programmer, "format_instructions": format_instructions})
+
+                                        with open(f"{code_directory}/output-code-compart-{compart_counter}.py", 'w') as f:
+                                            print(result['code'], file=f)
+                                        f.close()
+                                    except:
+                                        print(f"chain invoke failed on compartmental model: {compart_counter}")
+                                    
+                        else:
+                            for model_prop in model_property:
+                                abm_counter += 1
+                                try:
+                                    result = chain.invoke({"model_type": model, "code_qualifier": qualifier, "model_property": model_prop, "programmer_type": programmer, "format_instructions": format_instructions})
+
+                                    with open(f"{code_directory}/output-code-abm-{abm_counter}.py", 'w') as f:
+                                        print(result['code'], file=f)
+                                    f.close()
+                                except:
+                                    print(f"chain invoke failed on abm model: {abm_counter}")
+
+        # now for converting the new code into function networks as well
+        
+        # url for the code2fn service in skema (service needs to be up and running)
+        url = "http://localhost:8000/code2fn/fn-given-filepaths" # check this
+        code_2_fn(code_directory, fn_directory, url)
+
+        # lastly the code2graph service and the exporting of csv's from it

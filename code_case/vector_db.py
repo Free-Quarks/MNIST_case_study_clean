@@ -44,23 +44,6 @@ class ChromaCodet5pEmbedding(EmbeddingFunction):
     
 #     def embed_query(self, query: str) -> List[float]:
 #         return self.model.encode([query])
-        
-
-def create_seed_data(model, num_of_data, output_dir):
-    """
-    This function takes in a model and creates a seed dataset. 
-
-    Args: 
-        model (ChatOpenAI model): This is an initialized model that we will use to generate the data.
-                                    Assumed to be gpt-4o.
-        num_of_data (int): This is the amount of synthetic data to generate for the seed dataset
-        output_dir (string): The path to the directory of where the dataset should be written to. 
-
-    Return: 
-        None: This just writes to file, so doesn't have an official return
-    """
-    print("temp")
-
 
 if __name__ == "__main__":
 
