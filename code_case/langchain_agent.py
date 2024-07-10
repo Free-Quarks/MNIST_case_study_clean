@@ -19,6 +19,7 @@ from vector_db import ChromaCodet5pEmbedding, CHECKPOINT
 
 # generic
 import os
+from time import sleep
 
 # local
 from code_preprocessing import code_2_fn
@@ -35,6 +36,7 @@ DEVICE = "cuda"
 # both agents below are gpt-4o based
 RAG_AGENT = False # runs the RAG agent
 SEED_CODE_GENERATION_AGENT = True # runs the seed data generation agent
+SEED_FN_GRAPH_GENERATION = False # for converting the code into fn's and graphs
 
 # defining the output parser structures
 # RAG retrieval
@@ -108,7 +110,7 @@ if __name__ == "__main__":
         code_qualifier = ["Incorrectly", "compactly", "verbosely", ""]
 
         # model type key words
-        model_type = ["compartimental", "agentic", "network"]
+        model_type = ["compartmental", "agent based", "network"]
         
         # sub model key words 
         # compartimental
@@ -116,7 +118,7 @@ if __name__ == "__main__":
         method_list = ["Euler", "odeint", "RK2", "RK3", "RK4"]
 
         # agentic and network
-        model_property = ["vaccination", "stratification by age", "stratification by sex"]
+        model_property = ["some form of stratification", "vaccination", "stratification by age", "stratification by sex"]
 
         # defining the output parser
         parser = JsonOutputParser(pydantic_object=CodeOutput)
@@ -124,9 +126,11 @@ if __name__ == "__main__":
 
         compart_prompt_template = ChatPromptTemplate.from_messages([("human", "Write a {model_type} model {code_qualifier}. It should be based on {model_list} and use the {method_list}."), ("system", "You are a {programmer_type} that writes python scripts to simulate covid based on how the user requests and {format_instructions}")])
 
-        abm_prompt_template = ChatPromptTemplate.from_messages([("human", "Write a {model_type} model {code_qualifier}. It should include {model_property}"), ("system", "You are a {programmer_type} that writes python scripts to simulate covid based on how the user requests. {format_instructions}")])
+        abm_prompt_template = ChatPromptTemplate.from_messages([("human", "Write a {model_type} model to simulate covid, {code_qualifier}. It should include {model_property}"), ("system", "You are a {programmer_type} that writes python scripts to simulate covid based on user requests. {format_instructions}")])
 
-        chain = compart_prompt_template | model | parser
+        chain = compart_prompt_template | model | parser    
+
+        abm_chain = abm_prompt_template | model | parser
 
         compart_counter = 0
         abm_counter = 0
@@ -137,7 +141,7 @@ if __name__ == "__main__":
             for programmer in programmer_type:
                 for qualifier in code_qualifier:
                     for model in model_type:
-                        if model == "compartimental":
+                        if model == "compartmental": 
                             for submodel in model_list:
                                 for method in method_list:
                                     compart_counter += 1
@@ -149,23 +153,23 @@ if __name__ == "__main__":
                                         f.close()
                                     except:
                                         print(f"chain invoke failed on compartmental model: {compart_counter}")
-                                    
+                                    sleep(1) # to help manage calls per minute limits 
                         else:
+                            # this is currently not working, all of these abm prompts failed
                             for model_prop in model_property:
                                 abm_counter += 1
                                 try:
-                                    result = chain.invoke({"model_type": model, "code_qualifier": qualifier, "model_property": model_prop, "programmer_type": programmer, "format_instructions": format_instructions})
+                                    result = abm_chain.invoke({"model_type": model, "code_qualifier": qualifier, "model_property": model_prop, "programmer_type": programmer, "format_instructions": format_instructions})
 
                                     with open(f"{code_directory}/output-code-abm-{abm_counter}.py", 'w') as f:
                                         print(result['code'], file=f)
                                     f.close()
                                 except:
-                                    print(f"chain invoke failed on abm model: {abm_counter}")
-
+                                    print(f"chain invoke failed on abm model: {abm_counter}\nkeyworkds: {qualifier}, {model_prop}, {programmer}\n---------")
+                                sleep(1) # to help manage calls per minute limits 
+    if SEED_FN_GRAPH_GENERATION:
         # now for converting the new code into function networks as well
         
         # url for the code2fn service in skema (service needs to be up and running)
         url = "http://localhost:8000/code2fn/fn-given-filepaths" # check this
         code_2_fn(code_directory, fn_directory, url)
-
-        # lastly the code2graph service and the exporting of csv's from it
