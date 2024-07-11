@@ -414,7 +414,7 @@ def code_2_fn(code_directory, fn_directory, url):
         none: This function writes out to disk and doesn't have a return, unless it errors out
     """
     for filename in os.listdir(code_directory):
-        f = os.path.join(directory, filename)
+        f = os.path.join(code_directory, filename)
 
         try:
             single_snippet_payload = {

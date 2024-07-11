@@ -35,8 +35,8 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
 # both agents below are gpt-4o based
 RAG_AGENT = False # runs the RAG agent
-SEED_CODE_GENERATION_AGENT = True # runs the seed data generation agent
-SEED_FN_GRAPH_GENERATION = False # for converting the code into fn's and graphs
+SEED_CODE_GENERATION_AGENT = False # runs the seed data generation agent
+SEED_FN_GRAPH_GENERATION = True # for converting the code into fn's and graphs
 
 # defining the output parser structures
 # RAG retrieval
@@ -171,5 +171,9 @@ if __name__ == "__main__":
         # now for converting the new code into function networks as well
         
         # url for the code2fn service in skema (service needs to be up and running)
-        url = "http://localhost:8000/code2fn/fn-given-filepaths" # check this
+        url = "http://0.0.0.0:8000/code2fn/fn-given-filepaths" # check this
+
+        code_directory = "./dataset/new_test_code"
+        fn_directory = "./dataset/new_test_fn"
+
         code_2_fn(code_directory, fn_directory, url)
