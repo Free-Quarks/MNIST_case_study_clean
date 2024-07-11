@@ -16,6 +16,7 @@ torch
 torcheval
 torchvision
 torch_tb_profiler
+torch_geometric
 tqdm
 transformers
 scipy
