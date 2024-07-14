@@ -11,7 +11,7 @@ from typing import List
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
-CONSTRUCT_CHROMA = False
+CONSTRUCT_CHROMA = True
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
     
 class ChromaCodet5pEmbedding(EmbeddingFunction):
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # first we read in our data and preprocess and store it in a chroma vector db based on the appropriate embedding method
     # setup for codet5p embedding
 
-    data_dir = "./dataset/test_code"
+    data_dir = "./dataset/new_test_code"
     checkpoint = "Salesforce/codet5p-110m-embedding"
 
     # this is for the codet5p embedding case
@@ -59,13 +59,14 @@ if __name__ == "__main__":
     # if construct db is true
     if CONSTRUCT_CHROMA:
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
-        text_splitter = CharacterTextSplitter(chunk_size=512, chunk_overlap=0)
+        text_splitter = CharacterTextSplitter(chunk_size=456, chunk_overlap=0)
         docs = text_splitter.split_documents(raw_docs)
 
         persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
         collection = persistent_client.get_or_create_collection("seed_code", embedding_function=embedding_function_chroma_codet)
         for i, entry in enumerate(docs):
             collection.add(ids=f"{i}", embeddings = embedding_function_chroma_codet(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+            print(f"{i} of {len(docs)} added to db")
 
         results = collection.query(
             query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you

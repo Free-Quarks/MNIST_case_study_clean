@@ -107,6 +107,122 @@ def preprocess_tokenized(directory):
     dataset = ListDatasetWrapper(file_encodings)
     return dataset
 
+def fn_preprocessor(function_network):
+    fn_data = function_network.copy()
+
+    logs = []
+
+    '''
+    We will currently preprocess based on 2 different common bugs
+    1) wire tgt's being -1 -> which we will delete these wires
+    2) metadata being inline for bf entries instead of an index into the metadata_collection -> which we will replace with an index of 2
+    3) missing function_type field on a bf entry -> will replace with function_type: "IMPORTED"
+    4) If there is not a body field to a function -> replace "FUNCTION" with "ABSTRACT and set "name":"unknown"
+    5) If there are -1 entries in the metadata for line spans and col spans -> replaced with 1
+    6) NOT DONE YET: In the future we will preprocess about function calls being arguments, in order to simplify extracting the dataflow 
+    '''
+
+    # first we check the top bf level of wires and inline metadata: 
+    keys_to_check = ['bf', 'wff', 'wfopi', 'wfopo', 'wopio']
+    metadata_keys_to_check = ['line_begin', 'line_end', 'col_begin', 'col_end']
+    for key in metadata_keys_to_check:
+        try:
+            for (i, entry) in enumerate(fn_data['modules'][0]['metadata_collection']):
+                try:
+                    for (j, datum) in enumerate(entry):
+                        try:
+                            if datum[key] == -1:
+                                datum[key] = 1
+                                logs.append(
+                                    f"The {j + 1}'th metadata in the {i + 1} metadata index has -1 for the {key} entry")
+                        except:
+                            continue
+                except:
+                    continue
+        except:
+            continue
+
+    for key in keys_to_check:
+        if key == 'bf':
+            try:
+                for (i, entry) in enumerate(fn_data['modules'][0]['fn'][key]):
+                    try:
+                        metadata_obj = entry['metadata']
+                        if not isinstance(metadata_obj, int):
+                            entry['metadata'] = 2
+                            logs.append(f"Inline metadata on {i + 1}'th entry in top level bf")
+                    except:
+                        continue
+                    try:
+                        temp = entry['function_type']
+                    except:
+                        entry['function_type'] = "IMPORTED"
+                        logs.append(f"Missing function_type on {i + 1}'th entry in top level bf")
+                    try:
+                        if entry['function_type'] == "FUNCTION":
+                            temp = entry['body']
+                    except:
+                        entry['function_type'] = "ABSTRACT"
+                        entry['name'] = "Unknown"
+                        logs.append(f"Missing Function body on {i + 1}'th entry in top level bf")
+            except:
+                continue
+        else:
+            try:
+                for (i, entry) in enumerate(reversed(fn_data['modules'][0]['fn'][key])):
+                    try:
+                        if entry['tgt'] == -1:
+                            try:
+                                fn_data['modules'][0]['fn'][key].remove(entry)
+                                logs.append(f"The {i + 1}'th {key} wire in the top level bf is targeting -1")
+                            except:
+                                entry['tgt'] = 1
+                    except:
+                        continue
+            except:
+                continue
+
+    # now we iterate through the fn_array and do the same thing
+    for (j, fn_ent) in enumerate(fn_data['modules'][0]['fn_array']):
+        for key in keys_to_check:
+            if key == 'bf':
+                try:
+                    for (i, entry) in enumerate(fn_ent[key]):
+                        try:
+                            metadata_obj = entry['metadata']
+                            if not isinstance(metadata_obj, int):
+                                entry['metadata'] = 2
+                                logs.append(f"Inline metadata on {i + 1}'th bf in the {j + 1}'th fn_array")
+                        except:
+                            continue
+                        try:
+                            temp = entry['function_type']
+                        except:
+                            entry['function_type'] = "IMPORTED"
+                            logs.append(f"Missing function_type on {i + 1}'th bf in the {j + 1}'th fn_array")
+                        try:
+                            if entry['function_type'] == "FUNCTION":
+                                temp = entry['body']
+                        except:
+                            entry['function_type'] = "ABSTRACT"
+                            entry['name'] = "Unknown"
+                            logs.append(f"Missing Function body on {i + 1}'th bf in the {j + 1}'th fn_array")
+                except:
+                    continue
+            else:
+                try:
+                    for (i, entry) in enumerate(reversed(fn_ent[key])):
+                        if entry['tgt'] == -1:
+                            try:
+                                fn_ent[key][i].remove(entry)
+                                logs.append(f"The {i + 1}'th {key} wire in the {j + 1}'th fn_array is targeting -1")
+                            except:
+                                entry['tgt'] = 1
+                except:
+                    continue
+
+    return fn_data, logs
+
 def preprocess_tree(fn_directory, code_directory):
     """
     This function takes in the directory of the function networks to be processed into a dataset of code trees. Each node will have a subet of tokens and the feature vector for that node will come from the embedding model we are using. 
@@ -138,9 +254,11 @@ def preprocess_tree(fn_directory, code_directory):
         G.add_node(mod)
 
         # find and read in the matching source code file
-        code_file_id = filename.split("-")[2].split(".")[0]
+        # NOTE: This might need to be updated based on the file naming format
+        code_file_id = filename.split("-")[3].split(".")[0]
+        code_model_id = filename.split("-")[2]
         for codename in os.listdir(code_directory):
-            if codename.split("-")[2].split(".")[0] == code_file_id:
+            if codename.split("-")[3].split(".")[0] == code_file_id and codename.split("-")[2] == code_model_id:
                 c = os.path.join(code_directory, codename)
                 with open(c, 'r', encoding='utf-8') as code_file:
                     code_data = code_file.read()
@@ -152,7 +270,7 @@ def preprocess_tree(fn_directory, code_directory):
             fn_data = json.load(fn_file)
             fn_file.close()
         
-
+        fn_data, _ = fn_preprocessor(fn_data)
         print("------------------")
         print(f)
 
@@ -249,10 +367,14 @@ def preprocess_tree(fn_directory, code_directory):
         
     # now that we have the list of human readable trees, we now pass them to get encoded
     encoded_trees = []
-    for tree in tree_list:
+    for i, tree in enumerate(tree_list):
+        print("encoding trees...")
         encoded_trees.append(encode_graph(tree))
+        print(f"{i} of {len(tree_list)} done")
 
     print(encoded_trees[20])
+
+    torch.save(encoded_trees, './dataset/encoded_trees/encoded_trees.pth')
 
     # lastly we now convert this list of graphs into a proper pytorch dataset object 
     dataset = ListDatasetWrapper(encoded_trees)

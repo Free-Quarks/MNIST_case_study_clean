@@ -5,7 +5,8 @@ from torch import nn, optim
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from torch_geometric.loader import DataLoader
-
+from torch.utils.tensorboard import SummaryWriter
+import os
 
 
 # CONFIG
@@ -22,21 +23,30 @@ GRAPH_FEATURE = 36 # empirical, might be too small
 # Training Configs
 BATCH_SIZE = 8 # empirical, based on most graphs have different shapes, so hard to batch effectively
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # 'cuda:0' if only one gpu
-MAX_EPOCHS = 5
+MAX_EPOCHS = 8
 LR_RATE = 3e-4
 
 if __name__ == "__main__":
 
     # load the data in
-    code_directory = "./dataset/test_code"
-    fn_directory = "./dataset/test_fn"
-    tree_dataset = preprocess_tree(fn_directory, code_directory)
+    code_directory = "./dataset/new_test_code"
+    fn_directory = "./dataset/new_test_fn"
+
+    if os.path.exists('./dataset/encoded_trees/encoded_trees.pth'):
+        tree_data = torch.load('./dataset/encoded_trees/encoded_trees.pth')
+        tree_dataset = ListDatasetWrapper(tree_data)
+    else:
+        tree_dataset = preprocess_tree(fn_directory, code_directory)
+    
     train_loader = DataLoader(dataset=tree_dataset, batch_size=BATCH_SIZE, shuffle=True) # batch the data
 
     # load model, optimizer, and loss function
     model = GNNModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE).to(DEVICE) # load model to device
     optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
     loss_function = nn.MSELoss()
+
+    writer = SummaryWriter(log_dir = "./runs/tree", filename_suffix="_tree")
+
     model.train()
 
     # training the model
@@ -48,7 +58,10 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             recon_batch = model(data.x1, data.x2, data.pe, data.edge_index, data.batch)
             loss = loss_function(recon_batch, data.x1)
+            writer.add_scalar("Loss/train", loss, epoch)
             overall_loss += loss.item()
             loss.backward()
             optimizer.step()
         print("\tEpoch", epoch + 1, "\tAverage Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+    
+    writer.close()

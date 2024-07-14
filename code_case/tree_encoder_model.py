@@ -38,8 +38,10 @@ class GNNModel(torch.nn.Module):
     def __init__(self, embed_dim=256, in_channels=36, hidden_channels=36, out_channels=36, node_classes=10, compressed_classes=6, uncompressed_graph_feature=24, graph_feature=36):
         super(GNNModel, self).__init__()
         # graph encoder layers
+        self.dropout1 = nn.Dropout(p=0.1)
         self.embed_contraction = nn.Linear(embed_dim, in_channels)
         self.mpnn_feature = MPNNLayer(in_channels, hidden_channels)
+        self.dropout2 = nn.Dropout(p=0.1)
         self.gcn_feature = GCNConv(hidden_channels, out_channels)
         self.mpnn_class = MPNNLayer(node_classes, compressed_classes)
         self.gcn_class = GCNConv(compressed_classes, out_channels)
@@ -58,12 +60,14 @@ class GNNModel(torch.nn.Module):
 
     def encoder(self, x1, x2, pe, edge_index, batch):
         # encode the embedding feature dimension
+        x1 = self.dropout1(x1)
         x1 = self.embed_contraction(x1)
         x1_res = F.relu(x1)
         # 3x concatenated pe, so we can use smaller pe dim but also not too small of embedding dim
         x1 = x1_res + torch.cat((pe, pe, pe), dim=-1) 
         x1 = self.mpnn_feature(x1, edge_index)
         x1 = F.relu(x1)
+        x1 = self.dropout2(x1)
         x1 = self.gcn_feature(x1, edge_index)
         x1 = F.relu(x1)
         # encode the node class dimension
