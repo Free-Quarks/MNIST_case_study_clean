@@ -34,6 +34,14 @@ if __name__ == "__main__":
 
     if os.path.exists('./dataset/encoded_trees/encoded_trees.pth'):
         tree_data = torch.load('./dataset/encoded_trees/encoded_trees.pth')
+        # there are 2 bad data points in this, the failed encoding but didn't break it. They have 0 dimensional feature vectors
+        # so we search for and remove them in case we get more in the future
+        # annoying there isn't a nice way handle reversed enumeration
+        counter = len(tree_data) - 1
+        for entry in reversed(tree_data):
+            if entry.pe.shape[1] != 12:
+                tree_data.pop(counter)
+            counter += -1
         tree_dataset = ListDatasetWrapper(tree_data)
     else:
         tree_dataset = preprocess_tree(fn_directory, code_directory)
@@ -45,15 +53,14 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
     loss_function = nn.MSELoss()
 
-    writer = SummaryWriter(log_dir = "./runs/tree", filename_suffix="_tree")
+    writer = SummaryWriter(log_dir = "./runs/tree_2", filename_suffix="_tree")
 
     model.train()
 
     # training the model
-    for epoch in range(1, MAX_EPOCHS):
+    for epoch in range(0, MAX_EPOCHS):
         overall_loss = 0
         for batch_idx, data in tqdm(enumerate(train_loader)):
-            # need to use data.shape[0] as batch size in view because dataset no longer evenly divisble by 32
             data = data.to(DEVICE)
             optimizer.zero_grad()
             recon_batch = model(data.x1, data.x2, data.pe, data.edge_index, data.batch)
@@ -62,6 +69,6 @@ if __name__ == "__main__":
             overall_loss += loss.item()
             loss.backward()
             optimizer.step()
-        print("\tEpoch", epoch + 1, "\tAverage Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+        print("\tEpoch", epoch, "\tAverage Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
     
     writer.close()
