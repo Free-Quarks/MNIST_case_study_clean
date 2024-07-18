@@ -29,7 +29,7 @@ import random as rd
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
 WRITE_DIRECTORY = "./dataset/agentic_data_token"
-NEW_DATA_TARGET = 5
+NEW_DATA_TARGET = 100
 DIVERSITY_THRESHOLD = 0.35
 
 # defining the output parser structures
@@ -43,10 +43,10 @@ class DataOutput(BaseModel):
     """how to format the generated code"""
     code: str = Field(description="should be the code generated")
 
-def data_writer(data_input: str) -> None:
+def data_writer(data_input: str, model_t: str) -> None:
     """Writes data to disk."""
     num_genereated = len(os.listdir(WRITE_DIRECTORY))
-    with open(f"{WRITE_DIRECTORY}/agentic-token-code-{num_genereated}.py", 'w') as f:
+    with open(f"{WRITE_DIRECTORY}/agentic-token-code-{model_t}-{num_genereated}.py", 'w') as f:
         print(data_input, file=f)
     f.close()
 
@@ -84,23 +84,24 @@ if __name__ == "__main__":
 
     while not termination():
         # original prompt taxonomy
-        model_type = ["compartmental", "agent based", "network"]
+        model_type = ["compartmental", "agent-based", "network"]
         code_qualifier = ["incorrectly", "compactly", "verbosely", "normally"]
         model_list = ["SIR", "SEIR", "SEIRD", "SIDARTHE", "SEIRHD"]
         compart_method_list = ["Euler", "odeint", "RK2", "RK3", "RK4"]
         model_property = ["some form of stratification", "vaccination", "stratification by age", "stratification by sex", "no stratification"]
         
         # first we sample of prompt of the original prompt possibilities responsible for the seed data generation
-        model = model_type[rd.randint(0, len(model_type)-1)]
+        model_t = model_type[rd.randint(0, len(model_type)-1)]
         qualifier = code_qualifier[rd.randint(0, len(code_qualifier)-1)]
         prop = model_property[rd.randint(0, len(model_property)-1)]
 
-        if model == "compartmental":
+        if model_t == "compartmental":
             method = compart_method_list[rd.randint(0, len(compart_method_list)-1)]
             model_class = model_list[rd.randint(0, len(model_list)-1)]
-            prompt = f"Write a {model} model, {qualifier}, to simulate covid. It should be based on {model_class} and use the {method} method and include {prop}."
+            prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should be based on {model_class} and use the {method} method and include {prop}."
         else:
-            prompt = f"Write a {model} model, {qualifier}, to simulate covid. It should include {prop}"
+            prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should include {prop}"
+            model_t = "abm"
 
         # now we call an LLM to modify / diversify the prompt in a stocastic fashion
         model = ChatOpenAI(model="gpt-4o", temperature=0.7)
@@ -109,9 +110,13 @@ if __name__ == "__main__":
         parser = JsonOutputParser(pydantic_object=PromptOutput)
         format_instructions = parser.get_format_instructions()
 
-        # define prompt template
-        prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {format_instructions}"),("human", "Rewrite the following prompt to produce more a complex model:\n{prompt}")])
-
+        # define prompt template, random sampling of two different rewriting directions
+        p = rd.randint(0,1)
+        if p == 0:
+            prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {format_instructions}"),("human", "Rewrite the following prompt to produce more a complex model:\n{prompt}")])
+        else:
+            prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {format_instructions}"),("human", "Rewrite the following prompt to be more open ended on the model it generates:\n{prompt}")])
+        
         # define the chain
         sub_chain = prompt_template | model | parser
 
@@ -134,14 +139,14 @@ if __name__ == "__main__":
         # now we test if it's diverse
         diverse, quantification = chroma_rag_token_diversity(code_query)
 
-        if diverse: 
-            data_writer(code_query)
+        if diverse:
+            data_writer(code_query, model_t)
             print("---------")
-            print(f"one pass, the data was this diverse: {quantification} and was written to disk")
+            print(f"one pass, the data was this diverse: {quantification} and was written to disk, p: {p}")
             print("---------")
         else:
             print("---------")
-            print(f"one pass, the data was this diverse: {quantification} and was not written to disk")
+            print(f"one pass, the data was this diverse: {quantification} and was not written to disk, p: {p}")
             print("---------")
         
         
