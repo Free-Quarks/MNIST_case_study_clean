@@ -51,6 +51,7 @@ class TreeClassificationModel(nn.Module):
         z = F.relu(z)
         z = self.attention_2_class(z)
         z = F.softmax(z)
+        return z
 
 
 class TokenClassificationModel(nn.Module):
@@ -75,6 +76,8 @@ class TokenClassificationModel(nn.Module):
         x = self.dropout2(x)
         x = self.hidden_layer3(x)
         x = F.relu(x)
-        x = x + x_res
+        x_res_18 = x_res[:, :, :18]
+        x = x + x_res_18
         x = self.hidden_2_class(x)
-        z = F.softmax(x)
+        z = F.sigmoid(x)
+        return z
