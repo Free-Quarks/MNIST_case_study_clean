@@ -10,6 +10,7 @@ import networkx as nx
 from enum import Enum
 import numpy as np
 import subprocess
+import matplotlib.pyplot as plt
 
 # run the following if it complains: >$ export TOKENIZERS_PARALLELISM="true"
 
@@ -255,10 +256,10 @@ def preprocess_tree(fn_directory, code_directory):
 
         # find and read in the matching source code file
         # NOTE: This might need to be updated based on the file naming format
-        code_file_id = filename.split("-")[3].split(".")[0]
-        code_model_id = filename.split("-")[2]
+        code_file_id = filename.split("-")[-1].split(".")[0]
+        code_model_id = filename.split("-")[-2]
         for codename in os.listdir(code_directory):
-            if codename.split("-")[3].split(".")[0] == code_file_id and codename.split("-")[2] == code_model_id:
+            if codename.split("-")[-1].split(".")[0] == code_file_id and codename.split("-")[-2] == code_model_id:
                 c = os.path.join(code_directory, codename)
                 with open(c, 'r', encoding='utf-8') as code_file:
                     code_data = code_file.read()
@@ -364,6 +365,11 @@ def preprocess_tree(fn_directory, code_directory):
     #         print("Primitive Node")
     #         print(node)
     #         print("----------")
+    # Draw the graph
+    #nx.draw(tree_list[0], with_labels=True, node_color='skyblue', node_size=1500, edge_color='gray', font_size=16, font_weight='bold')
+
+    # Display the graph
+    #plt.show()
         
     # now that we have the list of human readable trees, we now pass them to get encoded
     encoded_trees = []
