@@ -12,6 +12,8 @@ from tree_encoder_model import GNNModel
 from code_preprocessing import preprocess_tree_query
 import torch
 
+from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
+
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
@@ -43,18 +45,25 @@ class ChromaCodet5pEmbedding(EmbeddingFunction):
 # this is also a bit janky since I didn't define the tree encoding function as a class
 class ChromaTreeEmbedding(EmbeddingFunction):
     def __init__(self, model_checkpoint, tree_checkpoint, url):
-        self.model = GNNModel().load_state_dict(torch.load(tree_checkpoint)).eval()
+        self.model = GNNModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE)
         self.url = url
         self.model_checkpoint = model_checkpoint
+        self.tree_checkpoint = tree_checkpoint
 
     def __call__(self, texts: Documents) -> chromadb.Embeddings:
         """This is a little hack-y right now, need to read more documentation
             to see how to get this working more cleanly."""
     
         embeddings = []
-        for text in texts:
-            encoded_graph = preprocess_tree_query(text.text, self.url, self.model_checkpoint)
-            embeddings.append(self.model(encoded_graph).tolist())
+        em_model = self.model
+        em_model.load_state_dict(torch.load(self.tree_checkpoint))
+        em_model.eval()
+
+        encoded_graph = preprocess_tree_query(texts, self.url, self.model_checkpoint)[0]
+        if encoded_graph.pe.shape[1] != 12:
+            embeddings.append(torch.zeros(GRAPH_FEATURE).tolist())
+        else:
+            embeddings.append(em_model.encoder(encoded_graph.x1, encoded_graph.x2, encoded_graph.pe, encoded_graph.edge_index, encoded_graph.batch).tolist())
     
         if len(embeddings) == 1:
             return embeddings[0]
@@ -68,7 +77,7 @@ if __name__ == "__main__":
 
     data_dir = "./dataset/new_test_code"
     checkpoint = "Salesforce/codet5p-110m-embedding"
-    tree_checkpoint = ""
+    tree_checkpoint = "./models/tree_ae/tree_ae.pth"
     url = "http://localhost:8000/code2fn/fn-given-filepaths"
 
     # this is for the codet5p embedding case
@@ -95,6 +104,7 @@ if __name__ == "__main__":
 
     elif CONSTRUCT_CHROMA_TREE:
         # this is for testing the tree embedding function wrapping in chroma
+        # no need to chunk the inpur for this case
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
         persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
         collection = persistent_client.get_or_create_collection("seed_code_tree", embedding_function=embedding_function_chroma_tree)

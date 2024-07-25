@@ -23,7 +23,7 @@ GRAPH_FEATURE = 36 # empirical, might be too small
 # Training Configs
 BATCH_SIZE = 8 # empirical, based on most graphs have different shapes, so hard to batch effectively
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # 'cuda:0' if only one gpu
-MAX_EPOCHS = 8
+MAX_EPOCHS = 5
 LR_RATE = 3e-4
 
 if __name__ == "__main__":
@@ -72,3 +72,5 @@ if __name__ == "__main__":
         print("\tEpoch", epoch, "\tAverage Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
     
     writer.close()
+    path = "./models/tree_ae/tree_ae.pth"
+    torch.save(model.state_dict(), path)

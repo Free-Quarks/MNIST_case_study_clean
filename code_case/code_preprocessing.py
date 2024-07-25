@@ -246,16 +246,23 @@ def preprocess_tree_query(query, url, model_checkpoint):
     G.add_node(mod)
 
     single_snippet_payload = {
-            "files": ["name"],
+            "files": ["temp.py"],
             "blobs": [query],
             "dependency_depth": 0
         }
-    
     response = requests.post(url, json=single_snippet_payload)
+    print(response)
     gromet = json.dumps(response.json(), indent=4)
 
-    gromet_json = json.loads(gromet)
-    
+    gromet_json_load = json.loads(gromet)
+
+    gromet_json_dict = (gromet_json_load)
+
+    # some preprocessessing
+    gromet_str = dictionary_to_gromet_json(del_nulls(gromet_json_dict), level=0)
+
+    gromet_json = json.loads(gromet_str)
+    # more preprocessessing
     fn_data, _ = fn_preprocessor(gromet_json)
 
     #---- Constuct the tree ----#
@@ -336,7 +343,6 @@ def preprocess_tree_query(query, url, model_checkpoint):
 
     # lastly we now convert this list of graphs into a proper pytorch dataset object 
     return encoded_trees
-
 
 def preprocess_tree(fn_directory, code_directory):
     """
