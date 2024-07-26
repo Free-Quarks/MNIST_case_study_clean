@@ -18,7 +18,8 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
 CONSTRUCT_CHROMA = False
-CONSTRUCT_CHROMA_TREE = True
+CONSTRUCT_CHROMA_TREE = False
+CHROMA_TREE = True
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
     
 class ChromaCodet5pEmbedding(EmbeddingFunction):
@@ -58,17 +59,33 @@ class ChromaTreeEmbedding(EmbeddingFunction):
         em_model = self.model
         em_model.load_state_dict(torch.load(self.tree_checkpoint))
         em_model.eval()
+        
+        # regular calls send a string query sends the string in a list
+        if isinstance(texts, list):
+            if len(texts) == 1:
+                texts = texts[0]
+            else:
+                print("error, large list input")
 
-        encoded_graph = preprocess_tree_query(texts, self.url, self.model_checkpoint)[0]
-        if encoded_graph.pe.shape[1] != 12:
+        encoded_graph = preprocess_tree_query(texts, self.url, self.model_checkpoint)
+        if encoded_graph is not None:
+            if encoded_graph[0].pe.shape[1] != 12:
+                embeddings.append(torch.zeros(GRAPH_FEATURE).tolist())
+            else:
+                embeddings.append(em_model.encoder(encoded_graph[0].x1, encoded_graph[0].x2, encoded_graph[0].pe, encoded_graph[0].edge_index, encoded_graph[0].batch).tolist())
+
+            # they have a type checker that requires since inputs to output a single vector but a collection of inputs output a list
+            # of vectors
+            if len(embeddings) == 1:
+                return embeddings[0]
+            else:
+                return embeddings
+        else:
             embeddings.append(torch.zeros(GRAPH_FEATURE).tolist())
-        else:
-            embeddings.append(em_model.encoder(encoded_graph.x1, encoded_graph.x2, encoded_graph.pe, encoded_graph.edge_index, encoded_graph.batch).tolist())
-    
-        if len(embeddings) == 1:
-            return embeddings[0]
-        else:
-            return embeddings
+            if len(embeddings) == 1:
+                return embeddings[0]
+            else:
+                return embeddings
 
 if __name__ == "__main__":
 
@@ -80,12 +97,9 @@ if __name__ == "__main__":
     tree_checkpoint = "./models/tree_ae/tree_ae.pth"
     url = "http://localhost:8000/code2fn/fn-given-filepaths"
 
-    # this is for the codet5p embedding case
-    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
-    embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
-
     # if construct db is true
     if CONSTRUCT_CHROMA:
+        embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
         text_splitter = CharacterTextSplitter(chunk_size=456, chunk_overlap=0)
         docs = text_splitter.split_documents(raw_docs)
@@ -103,6 +117,7 @@ if __name__ == "__main__":
         print(results)
 
     elif CONSTRUCT_CHROMA_TREE:
+        embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
         # this is for testing the tree embedding function wrapping in chroma
         # no need to chunk the inpur for this case
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
@@ -118,12 +133,28 @@ if __name__ == "__main__":
             n_results=2 # how many results to return
         )
         print(results)
+    elif CHROMA_TREE:
+        # make a query of a previous code file
+        raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
 
+        embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
+        persistent_client = chromadb.PersistentClient() # default settings
+        # this gets the collection since it's already present
+        collection = persistent_client.get_collection("seed_code_tree", embedding_function=embedding_function_chroma_tree)
+        print("There are", collection.count(), "in the collection")
+        results = collection.query(
+            query_texts=[raw_docs[0].page_content], # Chroma will embed this for you
+            n_results=2 # how many results to return
+        )
+        print(results['distances']) # this is a dict of 'ids', 'distances', 'metadatas', 'embeddings', 'documents', 'uris', 'data', 'included'
+        #print(results["documents"])
     else:
+        embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
         persistent_client = chromadb.PersistentClient() # default settings
         # this gets the collection since it's already present
         collection = persistent_client.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
         print("There are", collection.count(), "in the collection")
+
         results = collection.query(
             query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you
             n_results=2 # how many results to return

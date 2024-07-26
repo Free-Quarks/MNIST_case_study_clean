@@ -263,86 +263,89 @@ def preprocess_tree_query(query, url, model_checkpoint):
 
     gromet_json = json.loads(gromet_str)
     # more preprocessessing
-    fn_data, _ = fn_preprocessor(gromet_json)
+    if len(gromet_json['modules']) != 0:
+        fn_data, _ = fn_preprocessor(gromet_json)
 
-    #---- Constuct the tree ----#
-    # This is done in 3 passes, one to get top executable level, one to get the top fn_array level, and 
-    # one last pass to fill in subsructure and add edges to join referenced entries
+        #---- Constuct the tree ----#
+        # This is done in 3 passes, one to get top executable level, one to get the top fn_array level, and 
+        # one last pass to fill in subsructure and add edges to join referenced entries
 
-    # 1st pass, construct first layer of tree for executable level
-    if 'bf' in fn_data['modules'][0]['fn']: # not all code has executable parts 
-        module_bf = fn_data['modules'][0]['fn']['bf']
-        for i, ent in enumerate(module_bf):
-            t = NodeToken()
-            t.type = NodeType.from_string(ent['function_type'])
-            if 'name' in ent:
-                t.name = ent['name']
-            if 'metadata' in ent:
-                t.tokens = get_tokens(query, fn_data, ent['metadata'])
-            if 'body' in ent:
-                t.bf = True
-                t.idx = ent['body']
-            G.add_node(t)
-            G.add_edge(mod, t)
-
-    # 2nd pass, construct first layer of tree for fn_array level
-    fn_array = fn_data['modules'][0]['fn_array']
-    for j, obj in enumerate(fn_array):
-        t = NodeToken()
-        t.type = NodeType.from_string(obj['b'][0]['function_type'])
-        t.idx = j+1
-        if 'bf' in obj:
-            t.bf = True
-        # now check to make sure it wasn't already created in executable pass
-        novel_node = True
-        for node in list(G):
-            if node == t:
-                novel_node = False
-                break
-        if novel_node:
-            if 'name' in obj['b'][0]:
-                t.name = obj['b'][0]['name']
-            if 'metadata' in obj['b'][0]:
-                t.tokens = get_tokens(query, fn_data, obj['b'][0]['metadata'])
-            G.add_node(t)
-            G.add_edge(mod, t)
-    
-    # 3rd pass now that we have all the top level objects it is time to add the substructure that 
-    # exists in the expressions, predicates, and functions 
-    for node in list(G):
-        if node.bf and 'bf' in fn_array[node.idx - 1]:
-            bf_list = fn_array[node.idx - 1]['bf']
-            for ent in bf_list:
-                # construct node, check if novel, add node and edge
+        # 1st pass, construct first layer of tree for executable level
+        if 'bf' in fn_data['modules'][0]['fn']: # not all code has executable parts 
+            module_bf = fn_data['modules'][0]['fn']['bf']
+            for i, ent in enumerate(module_bf):
                 t = NodeToken()
                 t.type = NodeType.from_string(ent['function_type'])
+                if 'name' in ent:
+                    t.name = ent['name']
+                if 'metadata' in ent:
+                    t.tokens = get_tokens(query, fn_data, ent['metadata'])
                 if 'body' in ent:
-                    t.idx = ent['body']
-                    # if the node have substructure the parent has already been created, so we simply connect it
                     t.bf = True
-                    # find the node and add edge once found
-                    for old_node in list(G):
-                        if old_node == t:
-                            G.add_edge(node, old_node)
-                            break
-                else:
-                    t.idx = node.idx
-                    if 'name' in ent:
-                        t.name = ent['name']
-                    if 'metadata' in ent:
-                        t.tokens = get_tokens(query, fn_data, ent['metadata'])
-                    G.add_node(t)
-                    G.add_edge(node, t)
-    
-    tree_list.append(G)
-    
-    # now that we have the list of human readable trees, we now pass them to get encoded
-    encoded_trees = []
-    for tree in tree_list:
-        encoded_trees.append(encode_graph(tree, model_checkpoint))
+                    t.idx = ent['body']
+                G.add_node(t)
+                G.add_edge(mod, t)
 
-    # lastly we now convert this list of graphs into a proper pytorch dataset object 
-    return encoded_trees
+        # 2nd pass, construct first layer of tree for fn_array level
+        fn_array = fn_data['modules'][0]['fn_array']
+        for j, obj in enumerate(fn_array):
+            t = NodeToken()
+            t.type = NodeType.from_string(obj['b'][0]['function_type'])
+            t.idx = j+1
+            if 'bf' in obj:
+                t.bf = True
+            # now check to make sure it wasn't already created in executable pass
+            novel_node = True
+            for node in list(G):
+                if node == t:
+                    novel_node = False
+                    break
+            if novel_node:
+                if 'name' in obj['b'][0]:
+                    t.name = obj['b'][0]['name']
+                if 'metadata' in obj['b'][0]:
+                    t.tokens = get_tokens(query, fn_data, obj['b'][0]['metadata'])
+                G.add_node(t)
+                G.add_edge(mod, t)
+        
+        # 3rd pass now that we have all the top level objects it is time to add the substructure that 
+        # exists in the expressions, predicates, and functions 
+        for node in list(G):
+            if node.bf and 'bf' in fn_array[node.idx - 1]:
+                bf_list = fn_array[node.idx - 1]['bf']
+                for ent in bf_list:
+                    # construct node, check if novel, add node and edge
+                    t = NodeToken()
+                    t.type = NodeType.from_string(ent['function_type'])
+                    if 'body' in ent:
+                        t.idx = ent['body']
+                        # if the node have substructure the parent has already been created, so we simply connect it
+                        t.bf = True
+                        # find the node and add edge once found
+                        for old_node in list(G):
+                            if old_node == t:
+                                G.add_edge(node, old_node)
+                                break
+                    else:
+                        t.idx = node.idx
+                        if 'name' in ent:
+                            t.name = ent['name']
+                        if 'metadata' in ent:
+                            t.tokens = get_tokens(query, fn_data, ent['metadata'])
+                        G.add_node(t)
+                        G.add_edge(node, t)
+        
+        tree_list.append(G)
+        
+        # now that we have the list of human readable trees, we now pass them to get encoded
+        encoded_trees = []
+        for tree in tree_list:
+            encoded_trees.append(encode_graph(tree, model_checkpoint))
+
+        # lastly we now convert this list of graphs into a proper pytorch dataset object 
+        return encoded_trees
+    else:
+        return None
 
 def preprocess_tree(fn_directory, code_directory):
     """
