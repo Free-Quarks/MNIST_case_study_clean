@@ -21,6 +21,8 @@ CONSTRUCT_CHROMA = False
 CONSTRUCT_CHROMA_TREE = False
 CHROMA_TREE = True
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
+TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
+URL = "http://localhost:8000/code2fn/fn-given-filepaths"
     
 class ChromaCodet5pEmbedding(EmbeddingFunction):
     def __init__(self, checkpoint):
@@ -93,9 +95,9 @@ if __name__ == "__main__":
     # setup for codet5p embedding
 
     data_dir = "./dataset/new_test_code"
-    checkpoint = "Salesforce/codet5p-110m-embedding"
-    tree_checkpoint = "./models/tree_ae/tree_ae.pth"
-    url = "http://localhost:8000/code2fn/fn-given-filepaths"
+    checkpoint = CHECKPOINT
+    tree_checkpoint = TREE_CHECKPOINT
+    url = URL
 
     # if construct db is true
     if CONSTRUCT_CHROMA:

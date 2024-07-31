@@ -17,7 +17,7 @@ import numpy as np
 # for rag, specifically chroma
 import chromadb
 from chromadb import Documents, EmbeddingFunction
-from vector_db import ChromaCodet5pEmbedding, CHECKPOINT
+from vector_db import ChromaTreeEmbedding, CHECKPOINT, TREE_CHECKPOINT, URL
 
 # generic
 import os
@@ -28,9 +28,9 @@ import random as rd
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
-WRITE_DIRECTORY = "./dataset/agentic_data_token_v2"
+WRITE_DIRECTORY = "./dataset/agentic_data_tree"
 NEW_DATA_TARGET = 100
-DIVERSITY_THRESHOLD = 0.35
+DIVERSITY_THRESHOLD = 0.001
 
 # defining the output parser structures
 # defining our prompt analysis output class
@@ -46,7 +46,7 @@ class DataOutput(BaseModel):
 def data_writer(data_input: str, model_t: str) -> None:
     """Writes data to disk."""
     num_genereated = len(os.listdir(WRITE_DIRECTORY))
-    with open(f"{WRITE_DIRECTORY}/agentic-token-code-{model_t}-{num_genereated}.py", 'w') as f:
+    with open(f"{WRITE_DIRECTORY}/agentic-tree-code-{model_t}-{num_genereated}.py", 'w') as f:
         print(data_input, file=f)
     f.close()
 
@@ -58,20 +58,19 @@ def termination() -> bool:
     else:
         return False
 
-def chroma_rag_token_diversity(query: str) -> tuple[bool, float]:
+def chroma_rag_tree_diversity(query: str) -> tuple[bool, float]:
     """Determines weather a given data point is diverse from the existing database."""
     # load up the db
-    embedding_function = ChromaCodet5pEmbedding(CHECKPOINT)
+    embedding_function = ChromaTreeEmbedding(CHECKPOINT, TREE_CHECKPOINT, URL)
     persistent_client = chromadb.PersistentClient() # default settings
-    collection = persistent_client.get_collection("seed_code", embedding_function=embedding_function)
+    collection = persistent_client.get_collection("seed_code_tree", embedding_function=embedding_function)
 
     # run the query
     results = collection.query(
     query_texts=[query], # Chroma will embed this for you
     n_results=3 # how many results to return
         )
-    
-    # compare the distances, distances are L2, which is why we set a lower bound. 
+    # compare the distances
     distances = results['distances'][0]
     avg_dist = np.mean(distances)
     if avg_dist > DIVERSITY_THRESHOLD:
@@ -137,7 +136,7 @@ if __name__ == "__main__":
         code_query = data_result['code']
 
         # now we test if it's diverse
-        diverse, quantification = chroma_rag_token_diversity(code_query)
+        diverse, quantification = chroma_rag_tree_diversity(code_query)
 
         if diverse:
             data_writer(code_query, model_t)
