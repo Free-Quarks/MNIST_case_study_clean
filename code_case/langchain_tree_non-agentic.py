@@ -28,9 +28,9 @@ import random as rd
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
-WRITE_DIRECTORY = "./dataset/agentic_data_tree"
+WRITE_DIRECTORY = "./dataset/agentic_data_tree_v2"
 NEW_DATA_TARGET = 100
-DIVERSITY_THRESHOLD = 0.001
+DIVERSITY_THRESHOLD = 0.0017
 
 # defining the output parser structures
 # defining our prompt analysis output class
