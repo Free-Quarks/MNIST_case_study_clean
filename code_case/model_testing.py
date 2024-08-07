@@ -29,7 +29,8 @@ TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
 URL = "http://localhost:8000/code2fn/fn-given-filepaths"
 
 
-GENERATE_DATASETS = True
+GENERATE_DATASETS = False
+ENCODE_TEST_DATA = False
 TRAIN_TOKEN = True
 TRAIN_TREE = False
 
@@ -166,19 +167,31 @@ if __name__ == "__main__":
         torch.save(seed_dataset_tree, seed_dataset_tree_path)
         torch.save(diversified_data_tree, diversified_data_tree_path)
 
+    if ENCODE_TEST_DATA:
+        test_data_directory = "./dataset/test_data"
+        test_dataset_tok = preprocess_tokenized_dataset(test_data_directory)
+        test_dataset_tree = preprocess_tree_dataset(test_data_directory, URL, CHECKPOINT)
+
+        torch.save(test_dataset_tok, "./dataset/encoded_tokens/test_tokens.pth")
+        torch.save(test_dataset_tree, "./dataset/encoded_trees/test_trees.pth")
+
     # we load the datasets and run the dataloaders
     load_seed_dataset_tok = torch.load(seed_dataset_tok_path)
     load_diversified_data_tok = torch.load(diversified_data_tok_path)
     load_seed_dataset_tree = torch.load(seed_dataset_tree_path)
     load_diversified_data_tree = torch.load(diversified_data_tree_path)
+    load_test_dataset_tok = torch.load("./dataset/encoded_tokens/test_tokens.pth")
+    load_test_dataset_tree = torch.load("./dataset/encoded_trees/test_trees.pth")
 
     loader_seed_dataset_tok = DataLoader(dataset=load_seed_dataset_tok, batch_size=BATCH_SIZE, shuffle=True)
     loader_diversified_data_tok = DataLoader(dataset=load_diversified_data_tok, batch_size=BATCH_SIZE, shuffle=True)
     loader_seed_dataset_tree = DataLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
     loader_diversified_data_tree = DataLoader(dataset=load_diversified_data_tree, batch_size=BATCH_SIZE, shuffle=True)
+    loader_test_data_token = DataLoader(dataset=load_test_dataset_tok, batch_size=len(load_seed_dataset_tok))
+    loader_test_data_tree = DataLoader(dataset=load_test_dataset_tree, batch_size=len(load_seed_dataset_tree))
+
 
     # now we initialize the models 
-
     if TRAIN_TOKEN:
         model_seed = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
         model_diversified = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
