@@ -6,6 +6,7 @@ import os
 from classification_models import TokenClassificationModel
 import random as rd
 import tqdm
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 
 import chromadb
 from chromadb import Documents, EmbeddingFunction
@@ -13,11 +14,28 @@ from chromadb import Documents, EmbeddingFunction
 from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding
 
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
+from token_classification_trainer import preprocess_tokenized_dataset, TokenDatasetWrapper
+from code_preprocessing import preprocess_tree_query
+
+TOK_EMBED_DIM = 256
+TOK_IN_CHANNELS = 72
+TOK_HIDDEN_LAY1 = 36
+TOK_HIDDEN_LAY2 = 18
+TOK_GRAPH_CLASS = 1
 
 DEVICE = "cuda"
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
 TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
 URL = "http://localhost:8000/code2fn/fn-given-filepaths"
+
+
+GENERATE_DATASETS = True
+TRAIN_TOKEN = True
+TRAIN_TREE = False
+
+LR_RATE = 3e-4
+BATCH_SIZE = 32
+MAX_EPOCHS = 6
 
 """
 1)
@@ -41,18 +59,163 @@ URL = "http://localhost:8000/code2fn/fn-given-filepaths"
 4) 
     We need to run an inference loop to test them on the test set. 
 5)
-    We need to throw the filing into gpt-4o to also benchmark it's performance (likely 100% correct)
+    We need to throw the filing into gpt-4o to also benchmark it's performance (likely 100%)
 """
 
-embedding_function_chroma_codet = ChromaCodet5pEmbedding(CHECKPOINT)
-embedding_function_chroma_tree = ChromaTreeEmbedding(CHECKPOINT, TREE_CHECKPOINT, URL)
+def preprocess_tree_dataset(code_directory, url, model_checkpoint):
 
-persistent_client_tok = chromadb.PersistentClient() # default settings
-persistent_client_tree = chromadb.PersistentClient() # default settings
+    tree_data = []
+    raw_code_files = DirectoryLoader(code_directory, glob='*.py', loader_cls=TextLoader).load()
+    counter = 1
+    for file in raw_code_files:
+        encoded_graph = preprocess_tree_query(file.page_content, url, model_checkpoint)
+        if encoded_graph is not None:
+            if len(encoded_graph) == 1:
+                file_name = file.metadata['source']
+                label_name = file_name.split("-")[-2]
+                label = 0
+                if label_name == "abm":
+                    label = 1
+                tree_data.append((encoded_graph[0], label))
+        print(f"file {counter} of {len(raw_code_files)} done")
+        counter += 1
+    
+    dataset = TokenDatasetWrapper(tree_data)
+    return dataset
 
-collection_seed_tokens = persistent_client_tok.get_collection("trim_code_tok_v2", embedding_function=embedding_function_chroma_codet)
-collection_seed_tree = persistent_client_tree.get_collection("trim_code_tree_v2", embedding_function=embedding_function_chroma_tree)
 
-trim_seed_token_vecs = collection_seed_tokens.get(include=["embeddings"])
-trim_seed_tree_vecs = collection_seed_tree.get(include=["embeddings"])
+if __name__ == "__main__":
 
+    seed_dataset_tok_path = './dataset/encoded_tokens/seed_tokens.pth'
+    diversified_data_tok_path = './dataset/encoded_tokens/diverse_tokens.pth'
+    seed_dataset_tree_path = './dataset/encoded_trees/seed_trees.pth'
+    diversified_data_tree_path = './dataset/encoded_trees/diverse_trees.pth'
+
+    if GENERATE_DATASETS:
+        # this first chunk of code is just to make sure we trimmed the seed dataset in the same way to create the diversified data
+        embedding_function_chroma_codet = ChromaCodet5pEmbedding(CHECKPOINT)
+        embedding_function_chroma_tree = ChromaTreeEmbedding(CHECKPOINT, TREE_CHECKPOINT, URL)
+
+        persistent_client_tok = chromadb.PersistentClient() # default settings
+        persistent_client_tree = chromadb.PersistentClient() # default settings
+
+        collection_seed_tokens = persistent_client_tok.get_collection("trim_code_tok_v2", embedding_function=embedding_function_chroma_codet)
+        collection_seed_tree = persistent_client_tree.get_collection("trim_code_tree_v2", embedding_function=embedding_function_chroma_tree)
+
+        trim_seed_token_vecs = collection_seed_tokens.get(include=["metadatas"])
+        trim_seed_tree_vecs = collection_seed_tree.get(include=["metadatas"])
+
+        trimmed_tok_files = []
+        trimmed_tree_files = []
+        for metadata in trim_seed_token_vecs['metadatas']:
+            file = metadata['source']
+            trimmed_tok_files.append(file)
+        for metadata in trim_seed_tree_vecs['metadatas']:
+            file = metadata['source']
+            trimmed_tree_files.append(file)
+
+        # now we import the data and construct the 4 datasets, seed (tree and token), token-diverse and tree-diverse
+
+        directory_seed = "./dataset/new_test_code"
+        directory_diverse_tok = "./dataset/agentic_data_token_v2"
+        directory_diverse_tree = "./dataset/agentic_data_tree_v2"
+        trim_data_token_directory = "./dataset/trim_data_token"
+        trim_data_tree_directory = "./dataset/trim_data_tree"
+        
+        # easy data imports
+        seed_dataset_tok = preprocess_tokenized_dataset(directory_seed)
+        diverse_dataset_tok = preprocess_tokenized_dataset(directory_diverse_tok)
+        
+        seed_dataset_tree = preprocess_tree_dataset(directory_seed, URL, CHECKPOINT)
+        diverse_dataset_tree = preprocess_tree_dataset(directory_diverse_tree, URL, CHECKPOINT)
+
+        # harder data imports
+        # check if they have been isolated to new directories, if not, move them over
+        if len(os.listdir(trim_data_token_directory)) != len(trimmed_tok_files):
+            for filename in trimmed_tok_files:
+                last_name = filename.split("/")[-1]
+                with open(filename, 'r', encoding='utf-8') as code_file:
+                    code_data = code_file.read()
+                    code_file.close()
+                with open(trim_data_token_directory+"/"+last_name, 'w') as code_writer:
+                    code_writer.write(code_data)
+                    code_writer.close()
+                
+        if len(os.listdir(trim_data_tree_directory)) != len(trimmed_tree_files):
+            for filename in trimmed_tree_files:
+                last_name = filename.split("/")[-1]
+                with open(filename, 'r', encoding='utf-8') as code_file:
+                    code_data = code_file.read()
+                    code_file.close()
+                with open(trim_data_tree_directory+"/"+last_name, 'w') as code_writer:
+                    code_writer.write(code_data)
+                    code_writer.close()
+        
+        # now we import as usual for the last datasets
+        trim_seed_dataset_tok = preprocess_tokenized_dataset(trim_data_token_directory)
+        trim_seed_dataset_tree = preprocess_tokenized_dataset(trim_data_tree_directory)
+
+        diversified_data_tok = ConcatDataset([trim_seed_dataset_tok, diverse_dataset_tok])
+        diversified_data_tree = ConcatDataset([trim_seed_dataset_tree, diverse_dataset_tree])
+
+        # finally have all the datasets, diversified_data_tok, diversified_data_tree, seed_dataset_tok, seed_dataset_tree
+
+        # now we save the data so we don't have to generate again
+        torch.save(seed_dataset_tok, seed_dataset_tok_path)
+        torch.save(diversified_data_tok, diversified_data_tok_path)
+        torch.save(seed_dataset_tree, seed_dataset_tree_path)
+        torch.save(diversified_data_tree, diversified_data_tree_path)
+
+    # we load the datasets and run the dataloaders
+    load_seed_dataset_tok = torch.load(seed_dataset_tok_path)
+    load_diversified_data_tok = torch.load(diversified_data_tok_path)
+    load_seed_dataset_tree = torch.load(seed_dataset_tree_path)
+    load_diversified_data_tree = torch.load(diversified_data_tree_path)
+
+    loader_seed_dataset_tok = DataLoader(dataset=load_seed_dataset_tok, batch_size=BATCH_SIZE, shuffle=True)
+    loader_diversified_data_tok = DataLoader(dataset=load_diversified_data_tok, batch_size=BATCH_SIZE, shuffle=True)
+    loader_seed_dataset_tree = DataLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
+    loader_diversified_data_tree = DataLoader(dataset=load_diversified_data_tree, batch_size=BATCH_SIZE, shuffle=True)
+
+    # now we initialize the models 
+
+    if TRAIN_TOKEN:
+        model_seed = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
+        model_diversified = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
+        optimizer_seed = optim.Adam(model_seed.parameters(), lr=LR_RATE) # adam optimizer
+        optimizer_diversified = optim.Adam(model_diversified.parameters(), lr=LR_RATE) # adam optimizer
+        loss_function = nn.BCELoss()
+
+        model_seed.train()
+        model_diversified.train()
+        
+        for epoch in range(0, MAX_EPOCHS):
+            overall_loss = 0
+            for batch_idx, (data, label) in enumerate(loader_seed_dataset_tok):
+                data = data.to(DEVICE)
+                label = label.to(DEVICE)
+                optimizer_seed.zero_grad()
+                output = model_seed(data)
+                loss = loss_function(output.view(label.shape[0]), label.float())
+                overall_loss += loss.item()
+                loss.backward()
+                optimizer_seed.step()
+            print("\tSeed Epoch", epoch, "\tSeed Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+
+        # training the model on diversified data
+        for epoch in range(0, MAX_EPOCHS):
+            overall_loss = 0
+            for batch_idx, (data, label) in enumerate(loader_diversified_data_tok):
+                data = data.to(DEVICE)
+                label = label.to(DEVICE)
+                optimizer_diversified.zero_grad()
+                output = model_diversified(data)
+                loss = loss_function(output.view(label.shape[0]), label.float())
+                overall_loss += loss.item()
+                loss.backward()
+                optimizer_diversified.step()
+            print("\tDiversified Epoch", epoch, "\tDiversified Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE)) 
+
+    if TRAIN_TREE:
+        print("temp")
+    

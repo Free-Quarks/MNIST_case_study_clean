@@ -251,7 +251,7 @@ def preprocess_tree_query(query, url, model_checkpoint):
             "dependency_depth": 0
         }
     response = requests.post(url, json=single_snippet_payload)
-    print(response)
+    #print(response)
     gromet = json.dumps(response.json(), indent=4)
 
     gromet_json_load = json.loads(gromet)
