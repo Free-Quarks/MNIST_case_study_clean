@@ -50,7 +50,7 @@ class TreeClassificationModel(nn.Module):
         z = self.attention_pooling(z, batch) # batch is an actual attribute of the data object in pytorch geometric
         z = F.relu(z)
         z = self.attention_2_class(z)
-        z = F.softmax(z)
+        z = F.sigmoid(z)
         return z
 
 

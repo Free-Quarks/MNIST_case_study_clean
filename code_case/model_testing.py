@@ -1,13 +1,12 @@
-from transformers import AutoModel, AutoTokenizer
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
+from torch_geometric.loader import DataLoader as GeometricLoader
 import os
-from classification_models import TokenClassificationModel
-import random as rd
+from classification_models import TokenClassificationModel, TreeClassificationModel
 import tqdm
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-
+import torch_geometric
 import chromadb
 from chromadb import Documents, EmbeddingFunction
 
@@ -21,7 +20,7 @@ TOK_EMBED_DIM = 256
 TOK_IN_CHANNELS = 72
 TOK_HIDDEN_LAY1 = 36
 TOK_HIDDEN_LAY2 = 18
-TOK_GRAPH_CLASS = 1
+GRAPH_CLASS = 1
 
 DEVICE = "cuda"
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
@@ -31,8 +30,10 @@ URL = "http://localhost:8000/code2fn/fn-given-filepaths"
 
 GENERATE_DATASETS = False
 ENCODE_TEST_DATA = False
+FIX_DATA = False
 TRAIN_TOKEN = True
-TRAIN_TREE = False
+TRAIN_TREE = True
+
 
 LR_RATE = 3e-4
 BATCH_SIZE = 32
@@ -91,6 +92,17 @@ if __name__ == "__main__":
     diversified_data_tok_path = './dataset/encoded_tokens/diverse_tokens.pth'
     seed_dataset_tree_path = './dataset/encoded_trees/seed_trees.pth'
     diversified_data_tree_path = './dataset/encoded_trees/diverse_trees.pth'
+
+    if FIX_DATA:
+        trim_data_tree_directory = "./dataset/trim_data_tree"
+        directory_diverse_tree = "./dataset/agentic_data_tree_v2"
+
+        diverse_dataset_tree = preprocess_tree_dataset(directory_diverse_tree, URL, CHECKPOINT)
+        trim_seed_dataset_tree = preprocess_tree_dataset(trim_data_tree_directory, URL, CHECKPOINT)
+
+        diversified_data_tree = ConcatDataset([trim_seed_dataset_tree, diverse_dataset_tree])
+
+        torch.save(diversified_data_tree, diversified_data_tree_path)
 
     if GENERATE_DATASETS:
         # this first chunk of code is just to make sure we trimmed the seed dataset in the same way to create the diversified data
@@ -154,7 +166,7 @@ if __name__ == "__main__":
         
         # now we import as usual for the last datasets
         trim_seed_dataset_tok = preprocess_tokenized_dataset(trim_data_token_directory)
-        trim_seed_dataset_tree = preprocess_tokenized_dataset(trim_data_tree_directory)
+        trim_seed_dataset_tree = preprocess_tree_dataset(trim_data_tree_directory, URL, CHECKPOINT)
 
         diversified_data_tok = ConcatDataset([trim_seed_dataset_tok, diverse_dataset_tok])
         diversified_data_tree = ConcatDataset([trim_seed_dataset_tree, diverse_dataset_tree])
@@ -183,18 +195,39 @@ if __name__ == "__main__":
     load_test_dataset_tok = torch.load("./dataset/encoded_tokens/test_tokens.pth")
     load_test_dataset_tree = torch.load("./dataset/encoded_trees/test_trees.pth")
 
+    # need to test and fix the tree data some before putting in loader
+    counter = len(load_seed_dataset_tree) - 1
+    for (entry, label) in reversed(load_seed_dataset_tree):
+        if entry.pe.shape[1] != 12:
+            load_seed_dataset_tree.delete_entry(counter)
+        counter += -1
+
+    cleaned_dataset = []
+    for (entry, label) in reversed(load_diversified_data_tree):
+        if type(entry) == torch_geometric.data.data.Data:
+            if entry.pe.shape[1] == 12:
+                cleaned_dataset.append((entry, label))
+
+    load_diversified_data_tree_clean = TokenDatasetWrapper(cleaned_dataset)
+
+    counter = len(load_test_dataset_tree) - 1
+    for (entry, label) in reversed(load_test_dataset_tree):
+        if entry.pe.shape[1] != 12:
+                load_test_dataset_tree.delete_entry(counter)
+        counter += -1
+
     loader_seed_dataset_tok = DataLoader(dataset=load_seed_dataset_tok, batch_size=BATCH_SIZE, shuffle=True)
     loader_diversified_data_tok = DataLoader(dataset=load_diversified_data_tok, batch_size=BATCH_SIZE, shuffle=True)
-    loader_seed_dataset_tree = DataLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
-    loader_diversified_data_tree = DataLoader(dataset=load_diversified_data_tree, batch_size=BATCH_SIZE, shuffle=True)
+    loader_seed_dataset_tree = GeometricLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
+    loader_diversified_data_tree = GeometricLoader(dataset=load_diversified_data_tree_clean, batch_size=BATCH_SIZE, shuffle=True)
     loader_test_data_token = DataLoader(dataset=load_test_dataset_tok, batch_size=len(load_seed_dataset_tok))
-    loader_test_data_tree = DataLoader(dataset=load_test_dataset_tree, batch_size=len(load_seed_dataset_tree))
+    loader_test_data_tree = GeometricLoader(dataset=load_test_dataset_tree, batch_size=len(load_seed_dataset_tree))
 
 
     # now we initialize the models 
     if TRAIN_TOKEN:
-        model_seed = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
-        model_diversified = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, TOK_GRAPH_CLASS).to(DEVICE)
+        model_seed = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
+        model_diversified = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
         optimizer_seed = optim.Adam(model_seed.parameters(), lr=LR_RATE) # adam optimizer
         optimizer_diversified = optim.Adam(model_diversified.parameters(), lr=LR_RATE) # adam optimizer
         loss_function = nn.BCELoss()
@@ -230,5 +263,40 @@ if __name__ == "__main__":
             print("\tDiversified Epoch", epoch, "\tDiversified Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE)) 
 
     if TRAIN_TREE:
-        print("temp")
+        # initialize the models 
+        model_seed = TreeClassificationModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, GRAPH_CLASS).to(DEVICE)
+        model_diversified = TreeClassificationModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, GRAPH_CLASS).to(DEVICE)
+        optimizer_seed = optim.Adam(model_seed.parameters(), lr=LR_RATE) # adam optimizer
+        optimizer_diversified = optim.Adam(model_diversified.parameters(), lr=LR_RATE) # adam optimizer
+        loss_function = nn.BCELoss()
+
+        model_seed.train()
+        model_diversified.train()
+
+        for epoch in range(1, MAX_EPOCHS):
+            overall_loss = 0
+            for batch_idx, (data, label) in enumerate(loader_seed_dataset_tree):
+                # need to use data.shape[0] as batch size in view because dataset no longer evenly divisble by 32
+                data = data.to(DEVICE)
+                label = label.to(DEVICE)
+                optimizer_seed.zero_grad()
+                output = model_seed(data.x1, data.x2, data.pe, data.edge_index, data.batch)
+                loss = loss_function(output.view(label.shape[0]), label.float())
+                overall_loss += loss.item()
+                loss.backward()
+                optimizer_seed.step()
+            print("\tSeed Epoch", epoch + 1, "\tSeed Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
     
+        for epoch in range(1, MAX_EPOCHS):
+            overall_loss = 0
+            for batch_idx, (data, label) in enumerate(loader_diversified_data_tree):
+                # need to use data.shape[0] as batch size in view because dataset no longer evenly divisble by 32
+                data = data.to(DEVICE)
+                label = label.to(DEVICE)
+                optimizer_diversified.zero_grad()
+                output = model_diversified(data.x1, data.x2, data.pe, data.edge_index, data.batch)
+                loss = loss_function(output.view(label.shape[0]), label.float())
+                overall_loss += loss.item()
+                loss.backward()
+                optimizer_diversified.step()
+            print("\tDiverse Epoch", epoch + 1, "\tDiverse Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
