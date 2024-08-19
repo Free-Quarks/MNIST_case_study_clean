@@ -9,6 +9,9 @@ from transformers import AutoModel, AutoTokenizer
 from typing import List
 import random as rd
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+
 
 from tree_encoder_model import GNNModel
 from code_preprocessing import preprocess_tree_query
@@ -23,12 +26,131 @@ CHECKPOINT = "Salesforce/codet5p-110m-embedding"
 TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
 URL = "http://localhost:8000/code2fn/fn-given-filepaths"
 
+def collection_2_class_stats(collection):
+    collection_meta = collection.get(include=["embeddings", "metadatas"])
+    embeddings, labels = vecdb_2_labeled_embeddings(collection_meta)
+    class_0 = []
+    class_1 = []
+    for i, label in enumerate(labels):
+        if label == 0:
+            class_0.append(embeddings[i])
+        else:
+            class_1.append(embeddings[i])
+    
+    class_0_array = np.array(class_0)
+    class_1_array = np.array(class_1)
+
+    mean_0 = np.mean(class_0_array)
+    mean_1 = np.mean(class_1_array)
+    stdev_0 = np.std(class_0_array, axis=0)
+    stdev_1 = np.std(class_1_array, axis=0)
+    stdev_mean_0 = np.mean(stdev_0)
+    stdev_mean_1 = np.mean(stdev_1)
+    
+    class_stats = {
+        'class': [
+                {
+                'mean': mean_0,
+                'stdev': stdev_0,
+                'stdev_mean': stdev_mean_0
+            }, 
+                {
+                'mean': mean_1,
+                'stdev': stdev_1,
+                'stdev_mean': stdev_mean_1
+            }
+        ]
+    }
+
+    return class_stats, (class_0_array, class_1_array)
+
+
+
+
+
+def collections_2_clustering_plots(seed_collection, trim_collection, diverse_collection, figure_save_location):
+    tree_seed_embed_meta = seed_collection.get(include=["embeddings", "metadatas"])
+    tree_trim_embed_meta = trim_collection.get(include=["embeddings", "metadatas"])
+    tree_diverse_embed_meta = diverse_collection.get(include=["embeddings", "metadatas"])
+
+    seed_data, seed_labels = vecdb_2_labeled_embeddings(tree_seed_embed_meta)
+    trim_data, trim_labels = vecdb_2_labeled_embeddings(tree_trim_embed_meta)
+    diverse_data, diverse_labels = vecdb_2_labeled_embeddings(tree_diverse_embed_meta)
+    combined_data = np.concatenate((trim_data, diverse_data))
+    combined_labels = np.concatenate((trim_labels, diverse_labels))
+    
+    tsne = TSNE(n_components=2, random_state=42)
+    tsne_results_seed = tsne.fit_transform(seed_data)
+    tsne_results_trim = tsne.fit_transform(trim_data)
+    tsne_results_diverse = tsne.fit_transform(diverse_data)
+    tsne_results_combined = tsne.fit_transform(combined_data)
+
+    plt.figure(figsize=(12, 10))
+
+    plt.subplot(2, 2, 1)
+    for label in np.unique(seed_labels):
+        plt.scatter(tsne_results_seed[seed_labels == label, 0], tsne_results_seed[seed_labels == label, 1], alpha=0.7)
+    plt.title('Seed')
+    plt.xlabel('t-SNE 1')
+    plt.ylabel('t-SNE 2')
+    plt.legend(["compartmental", "abm"])
+    plt.grid(True)
+
+    plt.subplot(2, 2, 2)
+    for label in np.unique(trim_labels):
+        plt.scatter(tsne_results_trim[trim_labels == label, 0], tsne_results_trim[trim_labels == label, 1], alpha=0.7)
+    plt.title('Trimmed')
+    plt.xlabel('t-SNE 1')
+    plt.ylabel('t-SNE 2')
+    plt.legend(["compartmental", "abm"])
+    plt.grid(True)
+
+    plt.subplot(2, 2, 3)
+    for label in np.unique(diverse_labels):
+        plt.scatter(tsne_results_diverse[diverse_labels == label, 0], tsne_results_diverse[diverse_labels == label, 1], alpha=0.7)
+    plt.title('Diverse')
+    plt.xlabel('t-SNE 1')
+    plt.ylabel('t-SNE 2')
+    plt.legend(["compartmental", "abm"])
+    plt.grid(True)
+
+    plt.subplot(2, 2, 4)
+    for label in np.unique(combined_labels):
+        plt.scatter(tsne_results_combined[combined_labels == label, 0], tsne_results_combined[combined_labels == label, 1], alpha=0.7)
+    plt.title('Combined')
+    plt.xlabel('t-SNE 1')
+    plt.ylabel('t-SNE 2')
+    plt.legend(["compartmental", "abm"])
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(figure_save_location)
+
+
+def vecdb_2_labeled_embeddings(dict):
+    embeddings = []
+    labels = []
+    for i, metadata in enumerate(dict['metadatas']):
+        embedding = dict['embeddings'][i]
+        file = metadata['source']
+        label = 0
+        if file.split("-")[-2] == "abm":
+            label = 1
+        
+        embeddings.append(embedding)
+        labels.append(label)
+    
+    np_data = np.array(embeddings)
+    np_labels = np.array(labels)
+
+    return np_data, np_labels
+
 
 def array_2_mean_stdev(vec):
     array = np.array(vec) 
     stdev_vec = np.std(array, axis=0)
     mean_stdev = np.mean(stdev_vec)
-    return mean_stdev**2
+    return mean_stdev
 
 # returns a vector of indexes to delete from a dataset due to being too similar to another data point in the dataset
 # note: the vector is return in reverse order, so the largest vector is first, to allow easy deletion from the orignal
@@ -222,19 +344,64 @@ if __name__ == "__main__":
     expanded_diverse_token = collection_seed_token_vecs['embeddings'] + collection_diverse_tok_vecs['embeddings']
     expanded_diverse_tree = collection_seed_tree_vecs['embeddings'] + collection_diverse_tree_vecs['embeddings']
 
-    print(f"seed token: {array_2_mean_stdev(collection_seed_token_vecs['embeddings'])}")
-    print(f"seed tree: {array_2_mean_stdev(collection_seed_tree_vecs['embeddings'])}")
+    print(f"token diverse len: {len(collection_diverse_tok_vecs['embeddings']):.4f}")
+    print(f"tree diverse len: {len(collection_diverse_tree_vecs['embeddings']):.4f}")
+
+    print(f"seed token: {array_2_mean_stdev(collection_seed_token_vecs['embeddings']):.4f}")
+    print(f"seed tree: {array_2_mean_stdev(collection_seed_tree_vecs['embeddings']):.4f}")
     print("----------------------------------------------------")
-    print(f"expanded diverse token: {array_2_mean_stdev(expanded_diverse_token)}")
-    print(f"expanded diverse tree: {array_2_mean_stdev(expanded_diverse_tree)}")
+    print(f"trim token: {array_2_mean_stdev(collection_trim_tok_vecs['embeddings']):.4f}")
+    print(f"trim tree: {array_2_mean_stdev(collection_trim_tree_vecs['embeddings']):.4f}")
     print("----------------------------------------------------")
-    print(f"diverse token: {array_2_mean_stdev(diverse_tok_tok)}")
-    print(f"diverse tree: {array_2_mean_stdev(diverse_tree_tree)}")
+    print(f"expanded diverse token: {array_2_mean_stdev(expanded_diverse_token):.4f}")
+    print(f"expanded diverse tree: {array_2_mean_stdev(expanded_diverse_tree):.4f}")
     print("----------------------------------------------------")
-    print(f"diverse tree in token: {array_2_mean_stdev(diverse_tree_tok)}")
-    print(f"diverse token in tree: {array_2_mean_stdev(diverse_tok_tree)}")
+    print(f"diverse token: {array_2_mean_stdev(diverse_tok_tok):.4f}")
+    print(f"diverse tree: {array_2_mean_stdev(diverse_tree_tree):.4f}")
+    print("----------------------------------------------------")
+    print(f"diverse tree in token: {array_2_mean_stdev(diverse_tree_tok):.4f}")
+    print(f"diverse token in tree: {array_2_mean_stdev(diverse_tok_tree):.4f}")
+
+    # now let's look at clustering some of the data as well. Let's cluster tree_seed and tree_diverse
+    #collections_2_clustering_plots(collection_seed_tree, collection_trim_tree, collection_diverse_tree, "./figs/tree-tsne-results.png")
+    #collections_2_clustering_plots(collection_seed_tokens, collection_trim_tok, collection_diverse_tok, "./figs/token-tsne-results.png")
+
+    class_stats_seed_tree, seed_arrays = collection_2_class_stats(collection_seed_tree)
+    class_stats_trim_tree, trim_arrays = collection_2_class_stats(collection_trim_tree)
+    diverse_0 = np.concatenate((seed_arrays[0], trim_arrays[0]))
+    diverse_1 = np.concatenate((seed_arrays[1], trim_arrays[1]))
     
+    diverse_0_stdev = np.std(diverse_0, axis=0)
+    diverse_0_stdev_mean = np.mean(diverse_0_stdev)
+    diverse_1_stdev = np.std(diverse_1, axis=0)
+    diverse_1_stdev_mean = np.mean(diverse_1_stdev)
 
+    print("----------------------------------------------------")
+    print("----------------------------------------------------")
+    #print(f"seed mean 0: {class_stats_seed_tree['class'][0]['mean']}, seed mean 1: {class_stats_seed_tree['class'][1]['mean']}")
+    print(f"tree seed stdev 0: {class_stats_seed_tree['class'][0]['stdev_mean']:.4f}, tree seed stdev 1: {class_stats_seed_tree['class'][1]['stdev_mean']:.4f}")
+    #print(f"trim mean 0: {class_stats_trim_tree['class'][0]['mean']}, trim mean 1: {class_stats_trim_tree['class'][1]['mean']}")
+    print(f"tree trim stdev 0: {class_stats_trim_tree['class'][0]['stdev_mean']:.4f}, tree trim stdev 1: {class_stats_trim_tree['class'][1]['stdev_mean']:.4f}")
+    print(f"tree dive stdev 0: {diverse_0_stdev_mean:.4f}, tree dive stdev 1: {diverse_1_stdev_mean:.4f}")
+    print("----------------------------------------------------")
+    print("Tree:")
+    print(f"\tClass 0 trimmed: {100*(1-(len(trim_arrays[0])/len(seed_arrays[0]))):.2f}%")
+    print(f"\tClass 1 trimmed: {100*(1-(len(trim_arrays[1])/len(seed_arrays[1]))):.2f}%")
+    print("----------------------------------------------------")
+    class_stats_seed_tree, seed_arrays = collection_2_class_stats(collection_seed_tokens)
+    class_stats_trim_tree, trim_arrays = collection_2_class_stats(collection_trim_tok)
+    diverse_0 = np.concatenate((seed_arrays[0], trim_arrays[0]))
+    diverse_1 = np.concatenate((seed_arrays[1], trim_arrays[1]))
+    
+    diverse_0_stdev = np.std(diverse_0, axis=0)
+    diverse_0_stdev_mean = np.mean(diverse_0_stdev)
+    diverse_1_stdev = np.std(diverse_1, axis=0)
+    diverse_1_stdev_mean = np.mean(diverse_1_stdev)
+    print(f"token seed stdev 0: {class_stats_seed_tree['class'][0]['stdev_mean']:.4f}, token seed stdev 1: {class_stats_seed_tree['class'][1]['stdev_mean']:.4f}")
+    print(f"token trim stdev 0: {class_stats_trim_tree['class'][0]['stdev_mean']:.4f}, token trim stdev 1: {class_stats_trim_tree['class'][1]['stdev_mean']:.4f}")
+    print(f"token dive stdev 0: {diverse_0_stdev_mean:.4f}, token dive stdev 1: {diverse_1_stdev_mean:.4f}")
 
-
-
+    print("----------------------------------------------------")
+    print("Token:")
+    print(f"\tClass 0 trimmed: {100*(1-(len(trim_arrays[0])/len(seed_arrays[0]))):.2f}%")
+    print(f"\tClass 1 trimmed: {100*(1-(len(trim_arrays[1])/len(seed_arrays[1]))):.2f}%")
