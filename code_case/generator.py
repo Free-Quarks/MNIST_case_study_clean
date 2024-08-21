@@ -60,7 +60,6 @@ class Generator:
         self.prompting = prompting
         self.metric = metric
         self.output = output
-        self.termination_count = termination_count
         self.model = ChatOpenAI(model="gpt-4o", temperature=0.7)
 
     def generate_prompt(self):
@@ -142,8 +141,9 @@ class Generator:
 
         returns: the local diversity metric for the given data point and the most similar entries from our vectordb
         """
+        collection = self.vectordb
+
         if self.metric != "class":
-            collection = self.vectordb
 
             results = collection.query(
                 query_texts=[data_point], # Chroma will embed this for you
@@ -164,9 +164,39 @@ class Generator:
             return (avg_dist, data_entries)
 
         else:
-            return "temp"
+            n_results = 5
+            num_class = 0
+            while num_class < 3:
+                num_class = 0
+                results = collection.query(
+                    query_texts=[data_point], # Chroma will embed this for you
+                    n_results=n_results # how many results to return
+                )
+
+                relevant_data = []
+                for (i, filename) in enumerate(results['metadata'][0]):
+                    if filename.split("-")[-2] == data_class:
+                        relevant_data.append(i)
+                
+                num_class = len(relevant_data)
+                n_results += 2
+
+            distances = []
+            data_entries = []
+            relevant_data = relevant_data[:3]
+            for index in relevant_data:        
+                distances.append(results['distances'][0][index])
+                filename = results['metadata'][0][index]
+                with open(filename, 'r') as file:
+                    content = file.read()
+                file.close()
+                data_entries.append(content)
+
+            avg_dist = np.mean(distances)
+
+            return (avg_dist, data_entries)
     
-    def few_shot_prompt(self, prompt, data, db_entries):
+    def few_shot_generate_data(self, prompt, data, db_entries):
         """
         This takes in a previous prompt the data it generated and the similar db_entries and uses it to construct a 
         few-shot prompt to attempt to generate a more diverse output. 
@@ -174,7 +204,26 @@ class Generator:
         returns: another data point
         """
 
-        return "temp"
+        model = self.model
+
+        example_0 = f"{db_entries[0]}"
+        example_1 = f"{db_entries[1]}"
+        example_2 = f"{db_entries[2]}"
+
+        data_parser = JsonOutputParser(pydantic_object=DataOutput)
+        format_instructions = data_parser.get_format_instructions()
+
+        # since we are using the few-shot approach not how it's intended to be used, we will just use a 
+        # more a generic prompt template and modify it
+        few_shot_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {format_instructions}"),("human", "Please make sure the code you generate is sufficently different from these four examples: {example_0}\n\n{example_1}\n\n{example_2}\n\n{data}\n\n{prompt}")])
+
+        few_shot_prompt_chain = few_shot_prompt_template | model | data_parser
+
+        # invoke the chain
+        data_result = few_shot_prompt_chain.invoke({"example_0": example_0, "example_1": example_1, "example_2": example_2, "data": data, "prompt": prompt, "format_instructions": format_instructions})
+        code_query = data_result['code']
+
+        return code_query
     
     def data_writer(self, data, model_class):
         """
@@ -184,3 +233,8 @@ class Generator:
         with open(f"{self.output}/agentic-token-code-{model_class}-{num_genereated}.py", 'w') as f:
             print(data, file=f)
         f.close()
+
+if __name__ == "__main__":
+    # need to check that the data is being pulled correctly from the metadata in the vectordb
+    # need to check the few shot prompt is staying consistent with the class and overall prompt
+    print("temp")
