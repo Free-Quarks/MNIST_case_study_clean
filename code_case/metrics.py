@@ -66,7 +66,7 @@ class CollectionStats:
         self.skewness_vec = g
         self.skewness = g_mean
         self.kurtosis_vec = k
-        self.kurtosis = k_mean        
+        self.kurtosis = k_mean
 
 
 def vecdb_2_labeled_embeddings(dict):
@@ -185,6 +185,16 @@ def bimodality(collection):
     return (g, g_mean, k, k_mean, bimod)
 
 if __name__ == "__main__":
+    checkpoint = "Salesforce/codet5p-110m-embedding"
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    print("temp")
+    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    persistent_client_tok = chromadb.PersistentClient() # default settings
+    # this gets the collection since it's already present
+    collection_seed_tokens = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
+    print("There are", collection_seed_tokens.count(), "in the collection")
+
+    metrics = CollectionStats("seed")
+    metrics.get_stats(collection_seed_tokens)
+
+    print(f"{metrics.class_mean_vecs}\n\n{metrics.class_means}\n\n{metrics.mean_vec}\n\n{metrics.mean}\n\n{metrics.stdev_vec}\n\n{metrics.stdev}\n\n{metrics.class_stdev_vecs}\n\n{metrics.class_stdevs}\n\n{metrics.agg_stdev}\n\n{metrics.avg_stdev}\n\n{metrics.bimod}\n\n{metrics.skewness_vec}\n\n{metrics.skewness}\n\n{metrics.kurtosis_vec}\n\n{metrics.kurtosis}")
