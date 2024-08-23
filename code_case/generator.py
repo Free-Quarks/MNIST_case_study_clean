@@ -48,7 +48,7 @@ class DataOutput(BaseModel):
     code: str = Field(description="should be the code generated")
 
 class Generator:
-    def __init__(self, vectordb, prompting="few", metric="class", output="./dataset/default"):
+    def __init__(self, vectordb, prompting="few", metric="class", threshold=0.3, output="./dataset/default"):
         """
         vectordb: rag db for comparing similar data entries, this is a specific collection in question
         prompting: whether we are using zero or few shot prompting
@@ -59,6 +59,7 @@ class Generator:
         self.vectordb = vectordb
         self.prompting = prompting
         self.metric = metric
+        self.threshold = threshold
         self.output = output
         self.model = ChatOpenAI(model="gpt-4o", temperature=0.7)
 
@@ -130,10 +131,10 @@ class Generator:
         data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "{prompt}")])
 
         data_chain = data_prompt_template | model | data_parser
-        data_result = data_chain.invoke({"data_prompt": prompt, "data_format_instructions": data_format_instructions})
+        data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
         code_query = data_result['code']
 
-        return (code_query, model_class)
+        return (code_query, model_class, prompt)
     
     def compare_data_diversity(self, data_point, data_class):
         """
@@ -155,7 +156,8 @@ class Generator:
 
             # making an assumption here about the format of results
             data_entries = []
-            for filename in results['metadata'][0]:
+            for source in results['metadatas'][0]:
+                filename = source['source']
                 with open(filename, 'r') as file:
                     content = file.read()
                 file.close()
@@ -164,6 +166,7 @@ class Generator:
             return (avg_dist, data_entries)
 
         else:
+            # this approach is not good and is eating up a lot of time
             n_results = 5
             num_class = 0
             while num_class < 3:
@@ -174,7 +177,8 @@ class Generator:
                 )
 
                 relevant_data = []
-                for (i, filename) in enumerate(results['metadata'][0]):
+                for (i, source) in enumerate(results['metadatas'][0]):
+                    filename = source['source']
                     if filename.split("-")[-2] == data_class:
                         relevant_data.append(i)
                 
@@ -186,7 +190,8 @@ class Generator:
             relevant_data = relevant_data[:3]
             for index in relevant_data:        
                 distances.append(results['distances'][0][index])
-                filename = results['metadata'][0][index]
+                source = results['metadatas'][0][index]
+                filename = source['source']
                 with open(filename, 'r') as file:
                     content = file.read()
                 file.close()
@@ -203,7 +208,6 @@ class Generator:
 
         returns: another data point
         """
-
         model = self.model
 
         example_0 = f"{db_entries[0]}"
@@ -234,7 +238,29 @@ class Generator:
             print(data, file=f)
         f.close()
 
+    def generation_pass(self):
+        data_point, data_class, prompt = self.generate_data()
+        avg_dist, data_entries = self.compare_data_diversity(data_point, data_class)
+        print(f"{avg_dist}")
+        if avg_dist >= self.threshold:
+            self.data_writer(data_point, data_class)
+        if avg_dist < self.threshold and self.prompting == "few":
+            few_data_point = self.few_shot_generate_data(prompt, data_point, data_entries)
+            few_avg_dist, _few_data_entries = self.compare_data_diversity(few_data_point, data_class)
+            print(f"{few_avg_dist}")
+            if few_avg_dist >= self.threshold:
+                self.data_writer(few_data_point, data_class)
+
+
+
 if __name__ == "__main__":
+    checkpoint = "Salesforce/codet5p-110m-embedding"
+    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    persistent_client_tok = chromadb.PersistentClient() # default settings
+    # this gets the collection since it's already present
+    vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    print("temp")
+    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.5, output="./dataset/test_new_generator")
+    for i in range(10):
+        generator.generation_pass()
