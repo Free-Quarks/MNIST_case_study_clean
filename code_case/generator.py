@@ -84,6 +84,7 @@ class Generator:
             method = compart_method_list[rd.randint(0, len(compart_method_list)-1)]
             model_class = model_list[rd.randint(0, len(model_list)-1)]
             prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should be based on {model_class} and use the {method} method and include {prop}."
+            model_t == "compart"
         else:
             prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should include {prop}"
             model_t = "abm"
@@ -166,8 +167,7 @@ class Generator:
             return (avg_dist, data_entries)
 
         else:
-            # this approach is not good and is eating up a lot of time
-            n_results = 5
+            n_results = 250
             num_class = 0
             while num_class < 3:
                 num_class = 0
@@ -183,7 +183,7 @@ class Generator:
                         relevant_data.append(i)
                 
                 num_class = len(relevant_data)
-                n_results += 2
+                n_results += 25
 
             distances = []
             data_entries = []
@@ -241,13 +241,13 @@ class Generator:
     def generation_pass(self):
         data_point, data_class, prompt = self.generate_data()
         avg_dist, data_entries = self.compare_data_diversity(data_point, data_class)
-        print(f"{avg_dist}")
+        print(f"zero-shot distance: {avg_dist}")
         if avg_dist >= self.threshold:
             self.data_writer(data_point, data_class)
         if avg_dist < self.threshold and self.prompting == "few":
             few_data_point = self.few_shot_generate_data(prompt, data_point, data_entries)
             few_avg_dist, _few_data_entries = self.compare_data_diversity(few_data_point, data_class)
-            print(f"{few_avg_dist}")
+            print(f"few-shot distance: {few_avg_dist}")
             if few_avg_dist >= self.threshold:
                 self.data_writer(few_data_point, data_class)
 
