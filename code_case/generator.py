@@ -84,7 +84,7 @@ class Generator:
             method = compart_method_list[rd.randint(0, len(compart_method_list)-1)]
             model_class = model_list[rd.randint(0, len(model_list)-1)]
             prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should be based on {model_class} and use the {method} method and include {prop}."
-            model_t == "compart"
+            model_t = "compart"
         else:
             prompt = f"Write a {model_t} model, {qualifier}, to simulate covid. It should include {prop}"
             model_t = "abm"
@@ -184,6 +184,10 @@ class Generator:
                 
                 num_class = len(relevant_data)
                 n_results += 25
+                if n_results > 500:
+                    num_class = 5
+                    relevant_data = [1, 2, 3, 4]
+                    print(f"Error: {data_class}")
 
             distances = []
             data_entries = []
@@ -198,6 +202,8 @@ class Generator:
                 data_entries.append(content)
 
             avg_dist = np.mean(distances)
+
+            print(f"logging: {data_class}")
 
             return (avg_dist, data_entries)
     
@@ -239,6 +245,8 @@ class Generator:
         f.close()
 
     def generation_pass(self):
+        avg_dist = 0
+        few_avg_dist = 0
         data_point, data_class, prompt = self.generate_data()
         avg_dist, data_entries = self.compare_data_diversity(data_point, data_class)
         print(f"zero-shot distance: {avg_dist}")
@@ -250,6 +258,7 @@ class Generator:
             print(f"few-shot distance: {few_avg_dist}")
             if few_avg_dist >= self.threshold:
                 self.data_writer(few_data_point, data_class)
+        return avg_dist, few_avg_dist
 
 
 
@@ -261,6 +270,27 @@ if __name__ == "__main__":
     vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.5, output="./dataset/test_new_generator")
-    for i in range(10):
-        generator.generation_pass()
+    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.35, output="./dataset/test_new_generator")
+    zero_shot_distances = []
+    few_shot_distances = []
+    for i in range(8):
+        avg_dist, few_avg_dist = generator.generation_pass()
+        if avg_dist != 0:
+            zero_shot_distances.append(avg_dist)
+        if few_avg_dist != 0:
+            few_shot_distances.append(few_avg_dist)
+
+    zero_shot = np.array(zero_shot_distances)
+    few_shot = np.array(few_shot_distances)
+
+    np.savez('./dataset/test_new_generator/distances.npz', array1=zero_shot, array2=few_shot)
+
+    # Load the .npz file
+    data = np.load('./dataset/test_new_generator/distances.npz')
+
+    # Access the arrays using their assigned names
+    array1 = data['array1']
+    array2 = data['array2']
+    print(len(array1))
+    print(len(array2))
+
