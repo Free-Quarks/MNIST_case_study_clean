@@ -263,34 +263,56 @@ class Generator:
 
 
 if __name__ == "__main__":
+    write_directory = "./dataset/new_generator/token_class_few_full"
+    few_vs_zero_logs = write_directory + "/distances.npz"
     checkpoint = "Salesforce/codet5p-110m-embedding"
+
     embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
     persistent_client_tok = chromadb.PersistentClient() # default settings
     # this gets the collection since it's already present
     vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.35, output="./dataset/test_new_generator")
+    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.3, output=write_directory)
+
     zero_shot_distances = []
     few_shot_distances = []
-    for i in range(8):
+  
+    run_counter = 0
+    while len(os.listdir(write_directory)) < 400:
         avg_dist, few_avg_dist = generator.generation_pass()
         if avg_dist != 0:
             zero_shot_distances.append(avg_dist)
         if few_avg_dist != 0:
             few_shot_distances.append(few_avg_dist)
+        run_counter += 1
 
-    zero_shot = np.array(zero_shot_distances)
-    few_shot = np.array(few_shot_distances)
-
-    np.savez('./dataset/test_new_generator/distances.npz', array1=zero_shot, array2=few_shot)
+        # this is to make sure we update the few verse zero logs periodically in case we get a crash
+        if run_counter % 4 == 0:
+            if os.path.exists(few_vs_zero_logs):
+                data = np.load(few_vs_zero_logs)
+                old_zero_array = data['array1']
+                old_few_array = data['array2']
+                new_zero_array = np.array(zero_shot_distances)
+                new_few_array = np.array(few_shot_distances)
+                zero_shot = np.concatenate((old_zero_array, new_zero_array))
+                few_shot = np.concatenate((old_few_array, new_few_array))
+                np.savez(few_vs_zero_logs, array1=zero_shot, array2=few_shot)
+                # now to clear the vectors since we dumped the content, also so we don't double count
+                zero_shot_distances = []
+                few_shot_distances = []
+            else:
+                zero_shot = np.array(zero_shot_distances)
+                few_shot = np.array(few_shot_distances)
+                np.savez(few_vs_zero_logs, array1=zero_shot, array2=few_shot)
 
     # Load the .npz file
-    data = np.load('./dataset/test_new_generator/distances.npz')
+    data = np.load(few_vs_zero_logs)
 
     # Access the arrays using their assigned names
     array1 = data['array1']
     array2 = data['array2']
+    print(np.mean(array1))
     print(len(array1))
     print(len(array2))
 

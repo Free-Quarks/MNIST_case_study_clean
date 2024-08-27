@@ -109,12 +109,12 @@ def agg_std_dev(collection):
     stdevs = []
     stdev_means = []
 
-    mean_0_vec = np.mean(class_0_array)
+    mean_0_vec = np.mean(class_0_array, axis=1)
     mean_0 = np.mean(mean_0_vec)
-    mean_1_vec = np.mean(class_1_array)
+    mean_1_vec = np.mean(class_1_array, axis=1)
     mean_1 = np.mean(mean_1_vec)
-    stdev_0 = np.std(class_0_array, axis=0)
-    stdev_1 = np.std(class_1_array, axis=0)
+    stdev_0 = np.std(class_0_array, axis=1)
+    stdev_1 = np.std(class_1_array, axis=1)
     stdev_mean_0 = np.mean(stdev_0)
     stdev_mean_1 = np.mean(stdev_1)
 
@@ -147,8 +147,8 @@ def avg_std_dev(collection):
     class_0_array = np.array(class_0)
     class_1_array = np.array(class_1)
 
-    stdev_0 = np.std(class_0_array, axis=0)
-    stdev_1 = np.std(class_1_array, axis=0)
+    stdev_0 = np.std(class_0_array, axis=1)
+    stdev_1 = np.std(class_1_array, axis=1)
     stdev_mean_0 = np.mean(stdev_0)
     stdev_mean_1 = np.mean(stdev_1)
 
@@ -161,9 +161,16 @@ def std_dev(collection):
     collection_meta = collection.get(include=["embeddings", "metadatas"])
     embeddings, _labels = vecdb_2_labeled_embeddings(collection_meta)
 
-    mean = np.mean(embeddings)
+    print(f"N_chuncked = {len(embeddings)}\n")
+    dir = "./dataset/new_test_code"
+    files_len = len(os.listdir(dir))
+    print(f"N = {len(os.listdir(dir))}\n")
+
+    print(f"avg chunks per file: {len(embeddings)/files_len}\n")
+
+    mean = np.mean(embeddings, axis=1)
     mean_mean = np.mean(mean)
-    stdev = np.std(embeddings, axis=0)
+    stdev = np.std(embeddings, axis=1)
     stdev_mean = np.mean(stdev)
 
     return (mean, mean_mean, stdev, stdev_mean)
@@ -197,4 +204,4 @@ if __name__ == "__main__":
     metrics = CollectionStats("seed")
     metrics.get_stats(collection_seed_tokens)
 
-    print(f"{metrics.class_mean_vecs}\n\n{metrics.class_means}\n\n{metrics.mean_vec}\n\n{metrics.mean}\n\n{metrics.stdev_vec}\n\n{metrics.stdev}\n\n{metrics.class_stdev_vecs}\n\n{metrics.class_stdevs}\n\n{metrics.agg_stdev}\n\n{metrics.avg_stdev}\n\n{metrics.bimod}\n\n{metrics.skewness_vec}\n\n{metrics.skewness}\n\n{metrics.kurtosis_vec}\n\n{metrics.kurtosis}")
+    print(f"metrics.class_mean_vecs: {metrics.class_mean_vecs}\n\nmetrics.class_means: {metrics.class_means}\n\nmetrics.mean_vec: {metrics.mean_vec}\n\nmetrics.mean: {metrics.mean}\n\nmetrics.stdev_vec: {metrics.stdev_vec}\n\nmetrics.stdev: {metrics.stdev}\n\nmetrics.class_stdev_vecs: {metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {metrics.class_stdevs}\n\nmetrics.agg_stdev: {metrics.agg_stdev}\n\nmetrics.avg_stdev: {metrics.avg_stdev}\n\nmetrics.bimod: {metrics.bimod}\n\nmetrics.skewness_vec: {metrics.skewness_vec}\n\nmetrics.skewness: {metrics.skewness}\n\nmetrics.kurtosis_vec: {metrics.kurtosis_vec}\n\nmetrics.kurtosis: {metrics.kurtosis}")
