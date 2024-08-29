@@ -59,7 +59,7 @@ class Generator:
         self.vectordb = vectordb
         self.prompting = prompting
         self.metric = metric
-        self.threshold = threshold
+        self.threshold = threshold # this is default of 0.3 for token class metrics, 0.35 for token classless metrics
         self.output = output
         self.model = ChatOpenAI(model="gpt-4o", temperature=0.7)
 
@@ -240,7 +240,7 @@ class Generator:
         Need to update the naming convention
         """
         num_genereated = len(os.listdir(self.output))
-        with open(f"{self.output}/agentic-token-code-{model_class}-{num_genereated}.py", 'w') as f:
+        with open(f"{self.output}/agentic-tree-code-{model_class}-{num_genereated}.py", 'w') as f:
             print(data, file=f)
         f.close()
 
@@ -263,23 +263,28 @@ class Generator:
 
 
 if __name__ == "__main__":
-    write_directory = "./dataset/new_generator/token_class_few_full"
+    write_directory = "./dataset/new_generator/tree_classless_few"
     few_vs_zero_logs = write_directory + "/distances.npz"
     checkpoint = "Salesforce/codet5p-110m-embedding"
+    tree_checkpoint = "./models/tree_ae/tree_ae.pth"
+    url = "http://localhost:8000/code2fn/fn-given-filepaths"
 
-    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    ####embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
     persistent_client_tok = chromadb.PersistentClient() # default settings
     # this gets the collection since it's already present
-    vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
+    vectordb_seed = persistent_client_tok.get_collection("seed_code_tree", embedding_function=embedding_function_chroma_tree)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.3, output=write_directory)
+    generator = Generator(vectordb_seed, prompting="few", metric="classless", threshold=0.0010, output=write_directory)
 
     zero_shot_distances = []
     few_shot_distances = []
-  
+    print("-----------------")
+    print(f"{len(os.listdir(write_directory))} / 200 files generated")
+    print("-----------------")
     run_counter = 0
-    while len(os.listdir(write_directory)) < 400:
+    while len(os.listdir(write_directory)) < 200:
         avg_dist, few_avg_dist = generator.generation_pass()
         if avg_dist != 0:
             zero_shot_distances.append(avg_dist)

@@ -191,6 +191,108 @@ def bimodality(collection):
 
     return (g, g_mean, k, k_mean, bimod)
 
+def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed_collection_name, new_collection_name, diversity_amount, chunking=False):
+    """
+    This function creates a new colllection that is diversified (or appends to an existing one, so be careful about the name)
+
+    Args:
+        seed_dir: The directory of the seed data to be diversified
+        dirverse_dir: The directory of diverse data to be used to diversify
+        embedding_function: The embedding function to use for the creation and querying of the collection
+        seed_collection_name: The name of the seed collection, based on the seed data, this will be used to construct a simpler 
+        new_collection_name: The name of the collection, will be need to call the collection after it's creation
+        diversity_amount: the amount of the diverse data to use, expects full, half, or quarter as inputs
+        chunking: If the embedding function requires chunking, such as there is a context window for an LLM embedding function,
+                    this defaults to False. 
+    Returns: 
+        collection: the collection that was created
+    """
+    # this will overwrite other collections that would have the same name
+    persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
+    collection = persistent_client.get_or_create_collection(new_collection_name, embedding_function=embedding_function)
+    seed_collection = persistent_client.get_or_create_collection(seed_collection_name, embedding_function=embedding_function)
+
+    raw_seed_docs = DirectoryLoader(seed_dir, glob='*.py', loader_cls=TextLoader).load()
+    raw_diverse_docs_base = DirectoryLoader(diverse_dir, glob='*.py', loader_cls=TextLoader).load()
+    diverse_len = len(raw_diverse_docs_base)
+
+    if diversity_amount == "full":
+        raw_diverse_docs = raw_diverse_docs_base
+
+    elif diversity_amount == "half":
+        diverse_len = int(len(raw_diverse_docs)/2)
+        raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
+        
+    elif diversity_amount == "quater":
+        diverse_len = int(len(raw_diverse_docs)/4)
+        raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
+    else: 
+        print("Error: diversity amount needs to be full, half, or quater")
+        return collection
+
+    # now we need to remove a subset of the seed data to be replaced by the diverse data. We will remove the least diverse data
+    # will will do this by querying the seed collection by it's own data and grabbing the two most similar entries.
+    # these two should be the data point itself, which we ignore, and the closet data point, we then trim reflexive pairs, and 
+    # subselect the amount we need given our diversity amount, where we grab those that have the smallest value. 
+    results = []
+    for i, doc in enumerate(raw_seed_docs):
+        result = seed_collection.query(
+                query_texts=doc.page_content, # Chroma will embed this for you
+                n_results=2 # how many results to return
+            )
+        results.append((i, result))
+    
+    results_clone = results
+
+    expanded_results = []
+    for entry in results_clone:
+        distance = entry[1]['distances'][0][1]
+        original_file_idx = entry[0]
+        original_source = entry[1]['metadatas'][0][0]
+        original_filename = original_source['source']
+        nearest_source = entry[1]['metadatas'][0][1]
+        nearest_filename = nearest_source['source']
+        expanded_results.append((distance, original_file_idx, original_filename, nearest_filename))
+
+    # sort the results by distance, construct list of unique nearest_filenames until reaching the amount needed to be replaced
+    expanded_results.sort(key=lambda x: x[0])
+    
+    del_idxs = []
+    for i, ent1 in enumerate(expanded_results):
+        for j, ent2 in enumerate(expanded_results):
+            if j > i:
+                if ent1[2] == ent2[3] and ent1[3] == ent2[2]:
+                    del_idxs.append(ent1[2])
+
+        if len(del_idxs) >= diverse_len:
+            break
+
+    # now to delete these files from the raw docs we read in
+    del_idxs.sort(reverse=True)
+
+    # this might fail depending on the file type of raw_seed_docs
+    for idx in del_idxs:
+        raw_seed_docs.pop(idx)
+
+    # now back to collection construction
+    # chunking cases
+    if chunking:
+        text_splitter = CharacterTextSplitter(chunk_size=512, chunk_overlap=0)
+        seed_docs = text_splitter.split_documents(raw_seed_docs)
+        diverse_docs = text_splitter.split_documents(raw_diverse_docs)
+    else:
+        seed_docs = raw_seed_docs
+        diverse_docs = raw_diverse_docs
+
+    # add in the reduced seed data 
+    for i, entry in enumerate(seed_docs):
+        collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+    # add in the diverse data
+    for i, entry in enumerate(diverse_docs):
+        collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+
+    return collection
+
 if __name__ == "__main__":
     checkpoint = "Salesforce/codet5p-110m-embedding"
     # need to check that the data is being pulled correctly from the metadata in the vectordb
