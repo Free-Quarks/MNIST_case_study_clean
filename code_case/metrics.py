@@ -22,10 +22,15 @@ from scipy.stats import skew, kurtosis
 from tree_encoder_model import GNNModel
 from code_preprocessing import preprocess_tree_query
 import torch
+import pickle
 
 from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding
 
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
+
+TEST_CODE = False
+GENERATE_TOKEN_DBS = True
+GENERATE_TREE_DBS = False
 
 class CollectionStats:
     def __init__(self, collection_name):
@@ -220,11 +225,11 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
         raw_diverse_docs = raw_diverse_docs_base
 
     elif diversity_amount == "half":
-        diverse_len = int(len(raw_diverse_docs)/2)
+        diverse_len = int(len(raw_diverse_docs_base)/2)
         raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
         
     elif diversity_amount == "quater":
-        diverse_len = int(len(raw_diverse_docs)/4)
+        diverse_len = int(len(raw_diverse_docs_base)/4)
         raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
     else: 
         print("Error: diversity amount needs to be full, half, or quater")
@@ -234,35 +239,47 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
     # will will do this by querying the seed collection by it's own data and grabbing the two most similar entries.
     # these two should be the data point itself, which we ignore, and the closet data point, we then trim reflexive pairs, and 
     # subselect the amount we need given our diversity amount, where we grab those that have the smallest value. 
-    results = []
-    for i, doc in enumerate(raw_seed_docs):
-        result = seed_collection.query(
-                query_texts=doc.page_content, # Chroma will embed this for you
-                n_results=2 # how many results to return
-            )
-        results.append((i, result))
-    
-    results_clone = results
+    print("collecting results...")
+    if os.path.exists(seed_dir+'/results.pkl'):
+        with open(seed_dir+'/results.pkl', 'rb') as file:
+            expanded_results = pickle.load(file)
+    else:
+        result_counter = 0
+        results = []
+        for i, doc in enumerate(raw_seed_docs):
+            result = seed_collection.query(
+                    query_texts=doc.page_content, # Chroma will embed this for you
+                    n_results=2 # how many results to return
+                )
+            results.append((i, result))
+            result_counter += 1
+            print(f"{result_counter}/{len(raw_seed_docs)} results done")
+        
+        results_clone = results
 
-    expanded_results = []
-    for entry in results_clone:
-        distance = entry[1]['distances'][0][1]
-        original_file_idx = entry[0]
-        original_source = entry[1]['metadatas'][0][0]
-        original_filename = original_source['source']
-        nearest_source = entry[1]['metadatas'][0][1]
-        nearest_filename = nearest_source['source']
-        expanded_results.append((distance, original_file_idx, original_filename, nearest_filename))
+        expanded_results = []
+        for entry in results_clone:
+            distance = entry[1]['distances'][0][1]
+            original_file_idx = entry[0]
+            original_source = entry[1]['metadatas'][0][0]
+            original_filename = original_source['source']
+            nearest_source = entry[1]['metadatas'][0][1]
+            nearest_filename = nearest_source['source']
+            expanded_results.append((distance, original_file_idx, original_filename, nearest_filename))
+
+        # now to save this result so we don't have to compute it each time
+        with open(seed_dir+'/results.pkl', 'wb') as file:
+            pickle.dump(expanded_results, file)
 
     # sort the results by distance, construct list of unique nearest_filenames until reaching the amount needed to be replaced
     expanded_results.sort(key=lambda x: x[0])
-    
+    print("determining indexes to delete...")
     del_idxs = []
     for i, ent1 in enumerate(expanded_results):
         for j, ent2 in enumerate(expanded_results):
             if j > i:
                 if ent1[2] == ent2[3] and ent1[3] == ent2[2]:
-                    del_idxs.append(ent1[2])
+                    del_idxs.append(ent1[1])
 
         if len(del_idxs) >= diverse_len:
             break
@@ -285,25 +302,63 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
         diverse_docs = raw_diverse_docs
 
     # add in the reduced seed data 
+    print("adding trimmed seed docs...")
     for i, entry in enumerate(seed_docs):
         collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
     # add in the diverse data
+    print("adding diverse docs...")
     for i, entry in enumerate(diverse_docs):
         collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
 
     return collection
 
 if __name__ == "__main__":
-    checkpoint = "Salesforce/codet5p-110m-embedding"
-    # need to check that the data is being pulled correctly from the metadata in the vectordb
-    # need to check the few shot prompt is staying consistent with the class and overall prompt
-    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
-    persistent_client_tok = chromadb.PersistentClient() # default settings
-    # this gets the collection since it's already present
-    collection_seed_tokens = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
-    print("There are", collection_seed_tokens.count(), "in the collection")
+    if TEST_CODE:
+        checkpoint = "Salesforce/codet5p-110m-embedding"
+        # need to check that the data is being pulled correctly from the metadata in the vectordb
+        # need to check the few shot prompt is staying consistent with the class and overall prompt
+        embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+        persistent_client_tok = chromadb.PersistentClient() # default settings
+        # this gets the collection since it's already present
+        collection_seed_tokens = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
+        print("There are", collection_seed_tokens.count(), "in the collection")
 
-    metrics = CollectionStats("seed")
-    metrics.get_stats(collection_seed_tokens)
+        metrics = CollectionStats("seed")
+        metrics.get_stats(collection_seed_tokens)
 
-    print(f"metrics.class_mean_vecs: {metrics.class_mean_vecs}\n\nmetrics.class_means: {metrics.class_means}\n\nmetrics.mean_vec: {metrics.mean_vec}\n\nmetrics.mean: {metrics.mean}\n\nmetrics.stdev_vec: {metrics.stdev_vec}\n\nmetrics.stdev: {metrics.stdev}\n\nmetrics.class_stdev_vecs: {metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {metrics.class_stdevs}\n\nmetrics.agg_stdev: {metrics.agg_stdev}\n\nmetrics.avg_stdev: {metrics.avg_stdev}\n\nmetrics.bimod: {metrics.bimod}\n\nmetrics.skewness_vec: {metrics.skewness_vec}\n\nmetrics.skewness: {metrics.skewness}\n\nmetrics.kurtosis_vec: {metrics.kurtosis_vec}\n\nmetrics.kurtosis: {metrics.kurtosis}")
+        print(f"metrics.class_mean_vecs: {metrics.class_mean_vecs}\n\nmetrics.class_means: {metrics.class_means}\n\nmetrics.mean_vec: {metrics.mean_vec}\n\nmetrics.mean: {metrics.mean}\n\nmetrics.stdev_vec: {metrics.stdev_vec}\n\nmetrics.stdev: {metrics.stdev}\n\nmetrics.class_stdev_vecs: {metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {metrics.class_stdevs}\n\nmetrics.agg_stdev: {metrics.agg_stdev}\n\nmetrics.avg_stdev: {metrics.avg_stdev}\n\nmetrics.bimod: {metrics.bimod}\n\nmetrics.skewness_vec: {metrics.skewness_vec}\n\nmetrics.skewness: {metrics.skewness}\n\nmetrics.kurtosis_vec: {metrics.kurtosis_vec}\n\nmetrics.kurtosis: {metrics.kurtosis}")
+
+        # now to test the creation of a new vectordb
+        collection2 = construct_diverse_collection("./dataset/new_test_code", "./dataset/test_code", embedding_function_chroma_codet, "seed_code", "test_collection2", "half", chunking=True)
+
+        test_metrics = CollectionStats("test2")
+        test_metrics.get_stats(collection2)
+
+        print(f"metrics.class_mean_vecs: {test_metrics.class_mean_vecs}\n\nmetrics.class_means: {test_metrics.class_means}\n\nmetrics.mean_vec: {test_metrics.mean_vec}\n\nmetrics.mean: {test_metrics.mean}\n\nmetrics.stdev_vec: {test_metrics.stdev_vec}\n\nmetrics.stdev: {test_metrics.stdev}\n\nmetrics.class_stdev_vecs: {test_metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {test_metrics.class_stdevs}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev}\n\nmetrics.bimod: {test_metrics.bimod}\n\nmetrics.skewness_vec: {test_metrics.skewness_vec}\n\nmetrics.skewness: {test_metrics.skewness}\n\nmetrics.kurtosis_vec: {test_metrics.kurtosis_vec}\n\nmetrics.kurtosis: {test_metrics.kurtosis}")
+    
+    if GENERATE_TOKEN_DBS:
+        checkpoint = "Salesforce/codet5p-110m-embedding"
+        embedding_function = ChromaCodet5pEmbedding(checkpoint)
+
+        seed_dir = "./dataset/new_test_code"
+        seed_collection_name = "seed_code"
+
+        token_class_few_dir = "./dataset/new_generator/token_class_few_full"
+        token_classless_few_dir = "./dataset/new_generator/token_classless_few_full"
+        token_class_zero_dir = "./dataset/new_generator/token_class_zero_full"
+
+        token_class_few_full_name = "token_class_few_full"
+        token_class_few_half_name = "token_class_few_half"
+        token_class_few_quarter_name = "token_class_few_quarter"
+        token_class_zero_name = "token_class_zero"
+        token_classless_few_name = "token_classless_few"
+
+        token_class_few_full_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_full_name, "full", chunking=True)
+
+        token_class_few_half_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_half_name, "half", chunking=True)
+
+        token_class_few_quarter_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_quarter_name, "quarter", chunking=True)
+
+        token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=True)
+
+        token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=True)
