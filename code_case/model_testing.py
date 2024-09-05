@@ -65,7 +65,9 @@ MAX_EPOCHS = 6
 """
 
 def preprocess_tree_dataset(code_directory, url, model_checkpoint):
-
+    """
+    This converts a directory of code into a dataset of encoded tree graphs
+    """
     tree_data = []
     raw_code_files = DirectoryLoader(code_directory, glob='*.py', loader_cls=TextLoader).load()
     counter = 1
@@ -85,6 +87,34 @@ def preprocess_tree_dataset(code_directory, url, model_checkpoint):
     dataset = TokenDatasetWrapper(tree_data)
     return dataset
 
+def preprocess_tree_collection_dataset(collection, url, model_checkpoint):
+    """
+    This converts a vectordb collection into a dataset of encoded tree graphs
+    """
+    collection_dict = collection.get(include=["embeddings", "metadatas"])
+    raw_data = []
+    for metadata in collection_dict['metadatas']:
+        file_name = metadata['source']
+        label = 0
+        if file_name.split("-")[-2] == "abm":
+            label = 1
+        raw_data.append((file_name, label))
+
+    tree_data = []
+    counter = 1
+    for file_name, label in raw_data:
+        with open(file_name, 'r', encoding='utf-8') as file:
+            content = file.read()
+            file.close()
+        encoded_graph = preprocess_tree_query(content, url, model_checkpoint)
+        if encoded_graph is not None:
+            if len(encoded_graph) == 1:
+                tree_data.append((encoded_graph[0], label))
+        print(f"file {counter} of {len(raw_data)} done")
+        counter += 1
+    
+    dataset = TokenDatasetWrapper(tree_data)
+    return dataset
 
 if __name__ == "__main__":
 

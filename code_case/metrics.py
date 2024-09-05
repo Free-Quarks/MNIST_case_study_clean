@@ -9,6 +9,11 @@ from langchain.pydantic_v1 import BaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from classification_models import TokenClassificationModel, TreeClassificationModel
+from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
+from token_classification_trainer import preprocess_tokenized_dataset, TokenDatasetWrapper
+from code_preprocessing import preprocess_tree_query
+
 import os
 from transformers import AutoModel, AutoTokenizer
 from typing import List
@@ -20,7 +25,6 @@ from scipy.stats import skew, kurtosis
 
 
 from tree_encoder_model import GNNModel
-from code_preprocessing import preprocess_tree_query
 import torch
 import pickle
 
@@ -29,8 +33,11 @@ from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
 
 TEST_CODE = False
-GENERATE_TOKEN_DBS = True
+GENERATE_TOKEN_DBS = False
 GENERATE_TREE_DBS = False
+TOKEN_METRICS = False
+TREE_METRICS = True
+TREE_MODELS = True
 
 class CollectionStats:
     def __init__(self, collection_name):
@@ -73,6 +80,44 @@ class CollectionStats:
         self.kurtosis_vec = k
         self.kurtosis = k_mean
 
+
+def clean_tree_dataset(dataset):
+    # need to test and fix the tree data some before putting in loader
+    counter = len(dataset) - 1
+    for (entry, _label) in reversed(dataset):
+        if entry.pe.shape[1] != 12:
+            dataset.delete_entry(counter)
+        counter += -1
+    return dataset
+
+def preprocess_tree_collection_dataset(collection, url, model_checkpoint):
+    """
+    This converts a vectordb collection into a dataset of encoded tree graphs
+    """
+    collection_dict = collection.get(include=["embeddings", "metadatas"])
+    raw_data = []
+    for metadata in collection_dict['metadatas']:
+        file_name = metadata['source']
+        label = 0
+        if file_name.split("-")[-2] == "abm":
+            label = 1
+        raw_data.append((file_name, label))
+
+    tree_data = []
+    counter = 1
+    for file_name, label in raw_data:
+        with open(file_name, 'r', encoding='utf-8') as file:
+            content = file.read()
+            file.close()
+        encoded_graph = preprocess_tree_query(content, url, model_checkpoint)
+        if encoded_graph is not None:
+            if len(encoded_graph) == 1:
+                tree_data.append((encoded_graph[0], label))
+        print(f"file {counter} of {len(raw_data)} done")
+        counter += 1
+    
+    dataset = TokenDatasetWrapper(tree_data)
+    return dataset
 
 def vecdb_2_labeled_embeddings(dict):
     embeddings = []
@@ -228,11 +273,11 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
         diverse_len = int(len(raw_diverse_docs_base)/2)
         raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
         
-    elif diversity_amount == "quater":
+    elif diversity_amount == "quarter":
         diverse_len = int(len(raw_diverse_docs_base)/4)
         raw_diverse_docs = raw_diverse_docs_base[:diverse_len]
     else: 
-        print("Error: diversity amount needs to be full, half, or quater")
+        print("Error: diversity amount needs to be full, half, or quarter")
         return collection
 
     # now we need to remove a subset of the seed data to be replaced by the diverse data. We will remove the least diverse data
@@ -303,12 +348,14 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
 
     # add in the reduced seed data 
     print("adding trimmed seed docs...")
+    i_count = 0
     for i, entry in enumerate(seed_docs):
         collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+        i_count += 1
     # add in the diverse data
     print("adding diverse docs...")
     for i, entry in enumerate(diverse_docs):
-        collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+        collection.add(ids=f"{i+i_count+1}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
 
     return collection
 
@@ -321,20 +368,36 @@ if __name__ == "__main__":
         persistent_client_tok = chromadb.PersistentClient() # default settings
         # this gets the collection since it's already present
         collection_seed_tokens = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
-        print("There are", collection_seed_tokens.count(), "in the collection")
+
+        tree_checkpoint = "./models/tree_ae/tree_ae.pth"
+        url = "http://localhost:8000/code2fn/fn-given-filepaths"
+        embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
+        persistent_client_tree = chromadb.PersistentClient() # default settings
+        # this gets the collection since it's already present
+        collection_seed_tree = persistent_client_tree.get_collection("seed_code_tree", embedding_function=embedding_function_chroma_tree)
 
         metrics = CollectionStats("seed")
         metrics.get_stats(collection_seed_tokens)
 
-        print(f"metrics.class_mean_vecs: {metrics.class_mean_vecs}\n\nmetrics.class_means: {metrics.class_means}\n\nmetrics.mean_vec: {metrics.mean_vec}\n\nmetrics.mean: {metrics.mean}\n\nmetrics.stdev_vec: {metrics.stdev_vec}\n\nmetrics.stdev: {metrics.stdev}\n\nmetrics.class_stdev_vecs: {metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {metrics.class_stdevs}\n\nmetrics.agg_stdev: {metrics.agg_stdev}\n\nmetrics.avg_stdev: {metrics.avg_stdev}\n\nmetrics.bimod: {metrics.bimod}\n\nmetrics.skewness_vec: {metrics.skewness_vec}\n\nmetrics.skewness: {metrics.skewness}\n\nmetrics.kurtosis_vec: {metrics.kurtosis_vec}\n\nmetrics.kurtosis: {metrics.kurtosis}")
+        temp1 = f"Token_seed:\n\nmetrics.stdev: {metrics.stdev:.4f}\n\nmetrics.agg_stdev: {metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {metrics.avg_stdev:.4f}\n\nmetrics.bimod: {metrics.bimod:.4f}\n\nmetrics.skewness: {metrics.skewness:.4f}\n\nmetrics.kurtosis: {metrics.kurtosis:.4f}"
+
+        metrics.get_stats(collection_seed_tree)
+
+        temp2 = f"Tree_seed:\n\nmetrics.stdev: {metrics.stdev:.4f}\n\nmetrics.agg_stdev: {metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {metrics.avg_stdev:.4f}\n\nmetrics.bimod: {metrics.bimod:.4f}\n\nmetrics.skewness: {metrics.skewness:.4f}\n\nmetrics.kurtosis: {metrics.kurtosis:.4f}"
+
+        print("------------------------------")
+        print(temp1)
+        print("------------------------------")
+        print(temp2)
+        print("------------------------------")
 
         # now to test the creation of a new vectordb
-        collection2 = construct_diverse_collection("./dataset/new_test_code", "./dataset/test_code", embedding_function_chroma_codet, "seed_code", "test_collection2", "half", chunking=True)
+        #collection2 = construct_diverse_collection("./dataset/new_test_code", "./dataset/test_code", embedding_function_chroma_codet, "seed_code", "test_collection2", "half", chunking=True)
 
-        test_metrics = CollectionStats("test2")
-        test_metrics.get_stats(collection2)
+        #test_metrics = CollectionStats("test2")
+        #test_metrics.get_stats(collection2)
 
-        print(f"metrics.class_mean_vecs: {test_metrics.class_mean_vecs}\n\nmetrics.class_means: {test_metrics.class_means}\n\nmetrics.mean_vec: {test_metrics.mean_vec}\n\nmetrics.mean: {test_metrics.mean}\n\nmetrics.stdev_vec: {test_metrics.stdev_vec}\n\nmetrics.stdev: {test_metrics.stdev}\n\nmetrics.class_stdev_vecs: {test_metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {test_metrics.class_stdevs}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev}\n\nmetrics.bimod: {test_metrics.bimod}\n\nmetrics.skewness_vec: {test_metrics.skewness_vec}\n\nmetrics.skewness: {test_metrics.skewness}\n\nmetrics.kurtosis_vec: {test_metrics.kurtosis_vec}\n\nmetrics.kurtosis: {test_metrics.kurtosis}")
+        #print(f"metrics.class_mean_vecs: {test_metrics.class_mean_vecs}\n\nmetrics.class_means: {test_metrics.class_means}\n\nmetrics.mean_vec: {test_metrics.mean_vec}\n\nmetrics.mean: {test_metrics.mean}\n\nmetrics.stdev_vec: {test_metrics.stdev_vec}\n\nmetrics.stdev: {test_metrics.stdev}\n\nmetrics.class_stdev_vecs: {test_metrics.class_stdev_vecs}\n\nmetrics.class_stdevs: {test_metrics.class_stdevs}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev}\n\nmetrics.bimod: {test_metrics.bimod}\n\nmetrics.skewness_vec: {test_metrics.skewness_vec}\n\nmetrics.skewness: {test_metrics.skewness}\n\nmetrics.kurtosis_vec: {test_metrics.kurtosis_vec}\n\nmetrics.kurtosis: {test_metrics.kurtosis}")
     
     if GENERATE_TOKEN_DBS:
         checkpoint = "Salesforce/codet5p-110m-embedding"
@@ -362,3 +425,163 @@ if __name__ == "__main__":
         token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=True)
 
         token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=True)
+    
+    if GENERATE_TREE_DBS:
+        checkpoint = "Salesforce/codet5p-110m-embedding"
+        tree_checkpoint = "./models/tree_ae/tree_ae.pth"
+        url = "http://localhost:8000/code2fn/fn-given-filepaths"
+        embedding_function = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
+
+        seed_dir = "./dataset/new_test_code"
+        seed_collection_name = "seed_code"
+
+        tree_class_few_dir = "./dataset/new_generator/tree_class_few"
+        tree_classless_few_dir = "./dataset/new_generator/tree_classless_few"
+        tree_class_zero_dir = "./dataset/new_generator/tree_class_zero"
+
+        tree_class_few_full_name = "tree_class_few_full2"
+        tree_class_few_half_name = "tree_class_few_half2"
+        tree_class_few_quarter_name = "tree_class_few_quarter2"
+        tree_class_zero_name = "tree_class_zero2"
+        tree_classless_few_name = "tree_classless_few2"
+
+        tree_class_few_full_collection = construct_diverse_collection(seed_dir, tree_class_few_dir, embedding_function, seed_collection_name, tree_class_few_full_name, "full", chunking=False)
+
+        tree_class_few_half_collection = construct_diverse_collection(seed_dir, tree_class_few_dir, embedding_function, seed_collection_name, tree_class_few_half_name, "half", chunking=False)
+
+        tree_class_few_quarter_collection = construct_diverse_collection(seed_dir, tree_class_few_dir, embedding_function, seed_collection_name, tree_class_few_quarter_name, "quarter", chunking=False)
+
+        tree_class_zero_collection = construct_diverse_collection(seed_dir, tree_class_zero_dir, embedding_function, seed_collection_name, tree_class_zero_name, "full", chunking=False)
+
+        tree_classless_few_collection = construct_diverse_collection(seed_dir, tree_classless_few_dir, embedding_function, seed_collection_name, tree_classless_few_name, "full", chunking=False)
+
+    if TOKEN_METRICS:
+        token_class_few_full_name = "token_class_few_full"
+        token_class_few_half_name = "token_class_few_half"
+        token_class_few_quarter_name = "token_class_few_quarter"
+        token_class_zero_name = "token_class_zero"
+        token_classless_few_name = "token_classless_few"
+
+        checkpoint = "Salesforce/codet5p-110m-embedding"
+        embedding_function = ChromaCodet5pEmbedding(checkpoint)
+
+        # spool up 5 clients
+        persistent_client_class_few_full = chromadb.PersistentClient()
+        persistent_client_class_few_half = chromadb.PersistentClient()
+        persistent_client_class_few_quarter = chromadb.PersistentClient()
+        persistent_client_class_zero = chromadb.PersistentClient()
+        persistent_client_classless_few = chromadb.PersistentClient()
+
+
+        # grab the collections
+        token_class_few_full = persistent_client_class_few_full.get_collection(token_class_few_full_name, embedding_function=embedding_function)
+
+        token_class_few_half = persistent_client_class_few_half.get_collection(token_class_few_half_name, embedding_function=embedding_function)
+
+        token_class_few_quarter = persistent_client_class_few_quarter.get_collection(token_class_few_quarter_name, embedding_function=embedding_function)
+
+        token_class_zero = persistent_client_class_zero.get_collection(token_class_zero_name, embedding_function=embedding_function)
+
+        token_classless_few = persistent_client_classless_few.get_collection(token_classless_few_name, embedding_function=embedding_function)
+
+        # test to make sure the collections are working as intended
+        test_metrics = CollectionStats("test_2")
+        test_metrics.get_stats(token_class_few_full)
+        temp1 = f"Token_few_full:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_few_half)
+        temp2 = f"Token_few_half:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_few_quarter)
+        temp3 = f"Token_few_quarter:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_zero)
+        temp4 =  f"Token_zero:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_classless_few)
+        temp5 =  f"Token_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+
+        #print("There are", token_class_few_full.count(), "in the collection")
+        #print("There are", token_class_few_half.count(), "in the collection")
+        #print("There are", token_class_few_quarter.count(), "in the collection")
+        #print("There are", token_class_zero.count(), "in the collection")
+        #print("There are", token_classless_few.count(), "in the collection")
+
+        print("------------------------------")
+        print(temp1)
+        print("------------------------------")
+        print(temp2)
+        print("------------------------------")
+        print(temp3)
+        print("------------------------------")
+        print(temp4)
+        print("------------------------------")
+        print(temp5)
+        print("------------------------------")
+    if TREE_METRICS:
+        tree_class_few_full_name = "tree_class_few_full2"
+        tree_class_few_half_name = "tree_class_few_half2"
+        tree_class_few_quarter_name = "tree_class_few_quarter2"
+        tree_class_zero_name = "tree_class_zero2"
+        tree_classless_few_name = "tree_classless_few2"
+
+        checkpoint = "Salesforce/codet5p-110m-embedding"
+        tree_checkpoint = "./models/tree_ae/tree_ae.pth"
+        url = "http://localhost:8000/code2fn/fn-given-filepaths"
+        embedding_function = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
+
+        # spool up 5 clients
+        persistent_client_class_few_full = chromadb.PersistentClient()
+        persistent_client_class_few_half = chromadb.PersistentClient()
+        persistent_client_class_few_quarter = chromadb.PersistentClient()
+        persistent_client_class_zero = chromadb.PersistentClient()
+        persistent_client_classless_few = chromadb.PersistentClient()
+
+
+        # grab the collections
+        tree_class_few_full = persistent_client_class_few_full.get_collection(tree_class_few_full_name, embedding_function=embedding_function)
+
+        tree_class_few_half = persistent_client_class_few_half.get_collection(tree_class_few_half_name, embedding_function=embedding_function)
+
+        tree_class_few_quarter = persistent_client_class_few_quarter.get_collection(tree_class_few_quarter_name, embedding_function=embedding_function)
+
+        tree_class_zero = persistent_client_class_zero.get_collection(tree_class_zero_name, embedding_function=embedding_function)
+
+        tree_classless_few = persistent_client_classless_few.get_collection(tree_classless_few_name, embedding_function=embedding_function)
+
+        #print("There are", tree_class_few_full.count(), "in the collection")
+        #print("There are", tree_class_few_half.count(), "in the collection")
+        #print("There are", tree_class_few_quarter.count(), "in the collection")
+        #print("There are", tree_class_zero.count(), "in the collection")
+        #print("There are", tree_classless_few.count(), "in the collection")
+
+        # test to make sure the collections are working as intended
+        test_metrics = CollectionStats("test_2")
+        test_metrics.get_stats(tree_class_few_full)
+        temp1 = f"Tree_few_full:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(tree_class_few_half)
+        temp2 = f"Tree_few_half:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(tree_class_few_quarter)
+        temp3 = f"Tree_few_quarter:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(tree_class_zero)
+        temp4 = f"Tree_zero:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(tree_classless_few)
+        temp5 = f"Tree_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+
+        print("------------------------------")
+        print(temp1)
+        print("------------------------------")
+        print(temp2)
+        print("------------------------------")
+        print(temp3)
+        print("------------------------------")
+        print(temp4)
+        print("------------------------------")
+        print(temp5)
+        print("------------------------------")
+        if TREE_MODELS:
+            # preprocess the data
+            tree_class_few_full_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_full, url, checkpoint))
+            tree_class_few_half_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_half, url, checkpoint))
+            tree_class_few_quarter_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_quarter, url, checkpoint))
+            tree_class_zero_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_zero, url, checkpoint))
+            token_classless_few_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_classless_few, url, checkpoint))
+
+            # save the data, so we don't need to preprocess again
+                      
