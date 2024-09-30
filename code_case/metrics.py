@@ -3,6 +3,7 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import CharacterTextSplitter
 import chromadb
 from chromadb import Documents, EmbeddingFunction
+from torch_geometric.loader import DataLoader as GeometricLoader
 
 from langchain_openai import ChatOpenAI
 from langchain.pydantic_v1 import BaseModel, Field
@@ -13,6 +14,9 @@ from classification_models import TokenClassificationModel, TreeClassificationMo
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
 from token_classification_trainer import preprocess_tokenized_dataset, TokenDatasetWrapper
 from code_preprocessing import preprocess_tree_query
+
+from torch import nn, optim
+from torch.utils.data import DataLoader
 
 import os
 from transformers import AutoModel, AutoTokenizer
@@ -35,9 +39,10 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 TEST_CODE = False
 GENERATE_TOKEN_DBS = False
 GENERATE_TREE_DBS = False
-TOKEN_METRICS = False
-TREE_METRICS = True
-TREE_MODELS = True
+TOKEN_METRICS = True
+TOKEN_MODELS = True
+TREE_METRICS = False
+TREE_MODELS = False
 
 class CollectionStats:
     def __init__(self, collection_name):
@@ -117,6 +122,50 @@ def preprocess_tree_collection_dataset(collection, url, model_checkpoint):
         counter += 1
     
     dataset = TokenDatasetWrapper(tree_data)
+    return dataset
+
+def preprocess_tokenized_dataset_collection(collection, checkpoint):
+    """
+    This function takes in a chroma collection of the code that will be processed into a dataset of tokenized sequence inputs.
+    It then gets the embedding vector for the code and creates a labeled dataset by processing the label in the filename.
+
+    Args:
+        collection (collection): collction of code to be processed
+        checkpoint (string): checkpoint for the model we call that does the tokenization
+    Returns:
+        dataset (TokenDatasetWrapper): a dataset of processed code
+    """
+    # initialize encoder for tokenization
+    device = "cuda:1"  # for GPU usage or "cpu" for CPU usage
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
+    model = AutoModel.from_pretrained(checkpoint, trust_remote_code=True).to(device)
+
+    # first we read in and encode all the files in the directory
+    collection_dict = collection.get(include=["embeddings", "metadatas"])
+    raw_data = []
+    for metadata in collection_dict['metadatas']:
+        file_name = metadata['source']
+        label = 0
+        if file_name.split("-")[-2] == "abm":
+            label = 1
+        raw_data.append((file_name, label))
+
+    token_data = []
+    counter = 1
+    for file_name, label in raw_data:
+        with open(file_name, 'r') as file:
+            content = file.read()
+            file.close()
+
+        file_encoding = tokenizer.encode(content, truncation=True, return_tensors="pt").to(device)
+        embedding = model(file_encoding).to("cpu").detach()
+        token_data.append((embedding, label))
+        
+        print(f"file {counter} of {len(raw_data)} done")
+        counter += 1
+            
+    # wrap our list into a dataset
+    dataset = TokenDatasetWrapper(token_data)
     return dataset
 
 def vecdb_2_labeled_embeddings(dict):
@@ -514,6 +563,100 @@ if __name__ == "__main__":
         print("------------------------------")
         print(temp5)
         print("------------------------------")
+
+        if TOKEN_MODELS:
+            # encoded dataset locations
+            class_few_full_path = "./dataset/encoded_tokens/class_few_full.pth"
+            class_few_half_path = "./dataset/encoded_tokens/class_few_half.pth"
+            class_few_quarter_path = "./dataset/encoded_tokens/class_few_quarter.pth"
+            class_zero_path = "./dataset/encoded_tokens/class_zero.pth"
+            classless_few_path = "./dataset/encoded_tokens/classless_few.pth"
+
+            if os.path.exists(class_few_full_path):
+                token_class_few_full_dataset = torch.load(class_few_full_path)
+            else:
+                token_class_few_full_dataset = preprocess_tokenized_dataset_collection(token_class_few_full, checkpoint)
+                torch.save(token_class_few_full_dataset, class_few_full_path)
+            if os.path.exists(class_few_half_path):
+                token_class_few_half_dataset = torch.load(class_few_half_path)
+            else:
+                token_class_few_half_dataset = preprocess_tokenized_dataset_collection(token_class_few_half, checkpoint)
+                torch.save(token_class_few_half_dataset, class_few_half_path)
+            if os.path.exists(class_few_quarter_path):
+                token_class_few_quarter_dataset = torch.load(class_few_quarter_path)
+            else:
+                token_class_few_quarter_dataset = preprocess_tokenized_dataset_collection(token_class_few_quarter, checkpoint)
+                torch.save(token_class_few_quarter_dataset, class_few_quarter_path)
+            if os.path.exists(class_zero_path):
+                token_class_zero_dataset = torch.load(class_zero_path)
+            else:
+                token_class_zero_dataset = preprocess_tokenized_dataset_collection(token_class_zero, checkpoint)
+                torch.save(token_class_zero_dataset, class_zero_path)
+            if os.path.exists(classless_few_path):
+                token_classless_few_dataset = torch.load(classless_few_path)
+            else:
+                token_classless_few_dataset = preprocess_tokenized_dataset_collection(token_classless_few, checkpoint)
+                torch.save(token_classless_few_dataset, classless_few_path)
+
+            load_seed_dataset_tree = torch.load('./dataset/encoded_tokens/seed_tokens.pth')
+
+            # configuration values here:
+            LR_RATE = 3e-4
+            BATCH_SIZE = 32
+            MAX_EPOCHS = 2
+            DEVICE = "cuda:1"
+            NUM_RUNS = 3
+
+            # model values here
+            TOK_EMBED_DIM = 256
+            TOK_IN_CHANNELS = 72
+            TOK_HIDDEN_LAY1 = 36
+            TOK_HIDDEN_LAY2 = 18
+            GRAPH_CLASS = 1
+
+            # now to get all the datasets into datalaoders
+            loader_seed_dataset_tree = DataLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_full_dataset = DataLoader(dataset=token_class_few_full_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_half_dataset = DataLoader(dataset=token_class_few_half_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_quarter_dataset = DataLoader(dataset=token_class_few_quarter_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_zero_dataset = DataLoader(dataset=token_class_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_classless_few_dataset = DataLoader(dataset=token_classless_few_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+            # to make it easier to iterate over all the dataset, we will add them into a list now, with a name for the second entry in the tuple
+            loader_list = []
+            loader_list.append((loader_seed_dataset_tree, "seed_token"))
+            loader_list.append((loader_tree_class_few_full_dataset, "class_few_full_token"))
+            loader_list.append((loader_tree_class_few_half_dataset, "class_few_half_token"))
+            loader_list.append((loader_tree_class_few_quarter_dataset, "class_few_quarter_token"))
+            loader_list.append((loader_tree_class_zero_dataset, "class_zero_token"))
+            loader_list.append((loader_tree_classless_few_dataset, "classless_few_token"))
+
+            # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
+            for run in range(NUM_RUNS):
+                for (loader, name) in loader_list:
+                    model = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
+                    optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
+                    loss_function = nn.BCELoss()
+                    model.train()
+
+                    for epoch in range(1, MAX_EPOCHS):
+                        overall_loss = 0
+                        for batch_idx, (data, label) in enumerate(loader):
+                            data = data.to(DEVICE)
+                            label = label.to(DEVICE)
+                            optimizer.zero_grad()
+                            output = model(data)
+                            loss = loss_function(output.view(label.shape[0]), label.float())
+                            overall_loss += loss.item()
+                            loss.backward()
+                            optimizer.step()
+                        print("\tSeed Epoch", epoch, "\tSeed Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+
+                    # now to save the model 
+                    torch.save(model.state_dict(), f"./models/token_models/{name}/model_{run}.pth")
+                    del model
+
+
     if TREE_METRICS:
         tree_class_few_full_name = "tree_class_few_full2"
         tree_class_few_half_name = "tree_class_few_half2"
@@ -532,7 +675,6 @@ if __name__ == "__main__":
         persistent_client_class_few_quarter = chromadb.PersistentClient()
         persistent_client_class_zero = chromadb.PersistentClient()
         persistent_client_classless_few = chromadb.PersistentClient()
-
 
         # grab the collections
         tree_class_few_full = persistent_client_class_few_full.get_collection(tree_class_few_full_name, embedding_function=embedding_function)
@@ -576,12 +718,90 @@ if __name__ == "__main__":
         print(temp5)
         print("------------------------------")
         if TREE_MODELS:
-            # preprocess the data
-            tree_class_few_full_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_full, url, checkpoint))
-            tree_class_few_half_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_half, url, checkpoint))
-            tree_class_few_quarter_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_quarter, url, checkpoint))
-            tree_class_zero_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_zero, url, checkpoint))
-            token_classless_few_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_classless_few, url, checkpoint))
+            # see if the dataset have already been generated
+            class_few_full_path = "./dataset/encoded_trees/class_few_full.pth"
+            class_few_half_path = "./dataset/encoded_trees/class_few_half.pth"
+            class_few_quarter_path = "./dataset/encoded_trees/class_few_quarter.pth"
+            class_zero_path = "./dataset/encoded_trees/class_zero.pth"
+            classless_few_path = "./dataset/encoded_trees/classless_few.pth"
 
-            # save the data, so we don't need to preprocess again
-                      
+            if os.path.exists(class_few_full_path):
+                tree_class_few_full_dataset = torch.load(class_few_full_path)
+            else:
+                tree_class_few_full_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_full, url, checkpoint))
+                torch.save(tree_class_few_full_dataset, class_few_full_path)
+            if os.path.exists(class_few_half_path):
+                tree_class_few_half_dataset = torch.load(class_few_half_path)
+            else:
+                tree_class_few_half_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_half, url, checkpoint))
+                torch.save(tree_class_few_half_dataset, class_few_half_path)
+            if os.path.exists(class_few_quarter_path):
+                tree_class_few_quarter_dataset = torch.load(class_few_quarter_path)
+            else:
+                tree_class_few_quarter_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_few_quarter, url, checkpoint))
+                torch.save(tree_class_few_quarter_dataset, class_few_quarter_path)
+            if os.path.exists(class_zero_path):
+                tree_class_zero_dataset = torch.load(class_zero_path)
+            else:
+                tree_class_zero_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_class_zero, url, checkpoint))
+                torch.save(tree_class_zero_dataset, class_zero_path)
+            if os.path.exists(classless_few_path):
+                tree_classless_few_dataset = torch.load(classless_few_path)
+            else:
+                tree_classless_few_dataset = clean_tree_dataset(preprocess_tree_collection_dataset(tree_classless_few, url, checkpoint))
+                torch.save(tree_classless_few_dataset, classless_few_path)
+
+            load_seed_dataset_tree = clean_tree_dataset(torch.load('./dataset/encoded_trees/seed_trees.pth'))
+
+            # configuration values here:
+            LR_RATE = 3e-4
+            BATCH_SIZE = 32
+            MAX_EPOCHS = 6
+            GRAPH_CLASS = 1
+            DEVICE = "cuda:1"
+            NUM_RUNS = 3
+
+            # now to get all the datasets into datalaoders
+            loader_seed_dataset_tree = GeometricLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_full_dataset = GeometricLoader(dataset=tree_class_few_full_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_half_dataset = GeometricLoader(dataset=tree_class_few_half_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_quarter_dataset = GeometricLoader(dataset=tree_class_few_quarter_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_zero_dataset = GeometricLoader(dataset=tree_class_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_classless_few_dataset = GeometricLoader(dataset=tree_classless_few_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+            # to make it easier to iterate over all the dataset, we will add them into a list now, with a name for the second entry in the tuple
+            loader_list = []
+            loader_list.append((loader_seed_dataset_tree, "seed_tree"))
+            loader_list.append((loader_tree_class_few_full_dataset, "class_few_full_tree"))
+            loader_list.append((loader_tree_class_few_half_dataset, "class_few_half_tree"))
+            loader_list.append((loader_tree_class_few_quarter_dataset, "class_few_quarter_tree"))
+            loader_list.append((loader_tree_class_zero_dataset, "class_zero_tree"))
+            loader_list.append((loader_tree_classless_few_dataset, "classless_few_tree"))
+
+            # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
+            for run in range(NUM_RUNS):
+                for (loader, name) in loader_list:
+                    model = TreeClassificationModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, GRAPH_CLASS).to(DEVICE)
+                    optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
+                    loss_function = nn.BCELoss()
+                    model.train()
+
+                    for epoch in range(1, MAX_EPOCHS):
+                        overall_loss = 0
+                        for batch_idx, (data, label) in enumerate(loader):
+                            # need to use data.shape[0] as batch size in view incase dataset is not evenly divisble by 32
+                            data = data.to(DEVICE)
+                            label = label.to(DEVICE)
+                            optimizer.zero_grad()
+                            output = model(data.x1, data.x2, data.pe, data.edge_index, data.batch)
+                            loss = loss_function(output.view(label.shape[0]), label.float())
+                            overall_loss += loss.item()
+                            loss.backward()
+                            optimizer.step()
+                        print("\tSeed Epoch", epoch + 1, "\tSeed Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+
+                    # now to save the model 
+                    torch.save(model.state_dict(), f"./models/tree_models/{name}/model_{run}.pth")
+                    del model
+
+                
