@@ -140,7 +140,7 @@ def preprocess_tokenized_dataset_collection(collection, checkpoint):
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
     model = AutoModel.from_pretrained(checkpoint, trust_remote_code=True).to(device)
 
-    # first we read in and encode all the files in the directory
+    # first we read in and encode all the files in the collection, we need 
     collection_dict = collection.get(include=["embeddings", "metadatas"])
     raw_data = []
     for metadata in collection_dict['metadatas']:

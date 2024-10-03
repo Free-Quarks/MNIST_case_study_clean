@@ -4,6 +4,9 @@ from langchain_text_splitters import CharacterTextSplitter
 import chromadb
 from chromadb import Documents, EmbeddingFunction
 
+from sentence_transformers import SentenceTransformer
+import torch.nn.functional as F
+
 import os
 from transformers import AutoModel, AutoTokenizer
 from typing import List
@@ -19,7 +22,9 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda"
 CONSTRUCT_CHROMA = False
 CONSTRUCT_CHROMA_TREE = False
-CHROMA_TREE = True
+CHROMA_TREE = False
+CONSTRUCT_CHROMA_NOMIC = True
+NOMIC_CHECKPOINT = "nomic-ai/nomic-embed-text-v1.5"
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
 TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
 URL = "http://localhost:8000/code2fn/fn-given-filepaths"
@@ -38,6 +43,31 @@ class ChromaCodet5pEmbedding(EmbeddingFunction):
         tokens_vec = self.tokenize.encode(texts, return_tensors="pt")
         #print(len(tokens_vec))
         embeddings = self.model(tokens_vec).tolist()
+        #print(len(embeddings))
+        if len(embeddings) == 1:
+            return embeddings[0]
+        else:
+            return embeddings
+
+class ChromaNomicEmbedding(EmbeddingFunction):
+    def __init__(self, checkpoint, matryoshka_dim):
+        self.model =SentenceTransformer(checkpoint, trust_remote_code=True)
+        self.matryoshka_dim = matryoshka_dim
+    
+    def __call__(self, texts: Documents) -> chromadb.Embeddings:
+        """This is a little hack-y right now, need to read more documentation
+            to see how to get this working more cleanly."""
+        #print(len(texts))
+        if len(texts) == 1:
+            texts = texts[0]
+        #print(len(tokens_vec))
+        # This has a lot of extra steps due to the Matryoshka Dimensional Fixing
+        matryoshka_dim = self.matryoshka_dim
+        embeddings = self.model.encode(texts, convert_to_tensor=True)
+        #print(embeddings.shape)
+        #embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[0],))
+        embeddings = embeddings[:matryoshka_dim]
+        embeddings = F.normalize(embeddings, p=2, dim=0).tolist()
         #print(len(embeddings))
         if len(embeddings) == 1:
             return embeddings[0]
@@ -150,6 +180,26 @@ if __name__ == "__main__":
         )
         print(results['distances']) # this is a dict of 'ids', 'distances', 'metadatas', 'embeddings', 'documents', 'uris', 'data', 'included'
         #print(results["documents"])
+    elif CONSTRUCT_CHROMA_NOMIC:
+        data_dir = "./dataset/new_test_code"
+        matryoshka_dim = 128
+
+        embedding_function_chroma_nomic = ChromaNomicEmbedding(NOMIC_CHECKPOINT, matryoshka_dim)
+        raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
+
+        persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
+        collection = persistent_client.get_or_create_collection("seed_code_nomic", embedding_function=embedding_function_chroma_nomic)
+        
+        for i, entry in enumerate(raw_docs):
+            collection.add(ids=f"{i}", embeddings = embedding_function_chroma_nomic(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+            print(f"{i} of {len(raw_docs)} added to db")
+
+        results = collection.query(
+            query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you
+            n_results=2 # how many results to return
+        )
+
+        print(results)
     else:
         embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
         persistent_client = chromadb.PersistentClient() # default settings
