@@ -17,6 +17,9 @@ from code_preprocessing import preprocess_tree_query
 
 from torch import nn, optim
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
+
+from sentence_transformers import SentenceTransformer
 
 import os
 from transformers import AutoModel, AutoTokenizer
@@ -32,16 +35,18 @@ from tree_encoder_model import GNNModel
 import torch
 import pickle
 
-from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding
+from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding, ChromaNomicEmbedding
 
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
 
 TEST_CODE = False
 GENERATE_TOKEN_DBS = False
-GENERATE_TREE_DBS = False
-TOKEN_METRICS = True
-TOKEN_MODELS = True
-TREE_METRICS = False
+GENERATE_TREE_DBS = True
+GENERATE_TOKEN_NOMIC_DBS = True
+TOKEN_NOMIC_MODELS = False
+TOKEN_METRICS = False
+TOKEN_MODELS = False
+TREE_METRICS = True
 TREE_MODELS = False
 
 class CollectionStats:
@@ -159,6 +164,54 @@ def preprocess_tokenized_dataset_collection(collection, checkpoint):
 
         file_encoding = tokenizer.encode(content, truncation=True, return_tensors="pt").to(device)
         embedding = model(file_encoding).to("cpu").detach()
+        token_data.append((embedding, label))
+        
+        print(f"file {counter} of {len(raw_data)} done")
+        counter += 1
+            
+    # wrap our list into a dataset
+    dataset = TokenDatasetWrapper(token_data)
+    return dataset
+
+def preprocess_tokenized_dataset_collection_nomic(collection, checkpoint, matryoshka_dim):
+    """
+    This function takes in a chroma collection of the code that will be processed into a dataset of tokenized sequence inputs.
+    It then gets the embedding vector for the code and creates a labeled dataset by processing the label in the filename.
+
+    Args:
+        collection (collection): collction of code to be processed
+        checkpoint (string): checkpoint for the model we call that does the tokenization
+        matryoshka_dim (int): The dimension for the matryoshka embedding vector
+    Returns:
+        dataset (TokenDatasetWrapper): a dataset of processed code
+    """
+    # initialize encoder for tokenization
+    device = "cuda:1"  # for GPU usage or "cpu" for CPU usage
+    model = SentenceTransformer(checkpoint, trust_remote_code=True)
+
+    # first we read in and encode all the files in the collection, we need 
+    collection_dict = collection.get(include=["embeddings", "metadatas"])
+    raw_data = []
+    for metadata in collection_dict['metadatas']:
+        file_name = metadata['source']
+        label = 0
+        if file_name.split("-")[-2] == "abm":
+            label = 1
+        raw_data.append((file_name, label))
+
+    token_data = []
+    counter = 1
+    for file_name, label in raw_data:
+        with open(file_name, 'r') as file:
+            content = file.read()
+            file.close()
+
+        embedding = model.encode(content, convert_to_tensor=True)
+        #print(embeddings.shape)
+        #embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[0],))
+        embedding = embedding[:matryoshka_dim]
+        embedding = F.normalize(embedding, p=2, dim=0).to("cpu").detach()
+        #embedding = model(file_encoding).to("cpu").detach()
         token_data.append((embedding, label))
         
         print(f"file {counter} of {len(raw_data)} done")
@@ -334,8 +387,8 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
     # these two should be the data point itself, which we ignore, and the closet data point, we then trim reflexive pairs, and 
     # subselect the amount we need given our diversity amount, where we grab those that have the smallest value. 
     print("collecting results...")
-    if os.path.exists(seed_dir+'/results.pkl'):
-        with open(seed_dir+'/results.pkl', 'rb') as file:
+    if os.path.exists(seed_dir+'/results_'+seed_collection_name+'.pkl'):
+        with open(seed_dir+'/results_'+seed_collection_name+'.pkl', 'rb') as file:
             expanded_results = pickle.load(file)
     else:
         result_counter = 0
@@ -362,7 +415,7 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
             expanded_results.append((distance, original_file_idx, original_filename, nearest_filename))
 
         # now to save this result so we don't have to compute it each time
-        with open(seed_dir+'/results.pkl', 'wb') as file:
+        with open(seed_dir+'/results_'+seed_collection_name+'.pkl', 'wb') as file:
             pickle.dump(expanded_results, file)
 
     # sort the results by distance, construct list of unique nearest_filenames until reaching the amount needed to be replaced
@@ -482,17 +535,17 @@ if __name__ == "__main__":
         embedding_function = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
 
         seed_dir = "./dataset/new_test_code"
-        seed_collection_name = "seed_code"
+        seed_collection_name = "seed_code_tree"
 
         tree_class_few_dir = "./dataset/new_generator/tree_class_few"
         tree_classless_few_dir = "./dataset/new_generator/tree_classless_few"
         tree_class_zero_dir = "./dataset/new_generator/tree_class_zero"
 
-        tree_class_few_full_name = "tree_class_few_full2"
-        tree_class_few_half_name = "tree_class_few_half2"
-        tree_class_few_quarter_name = "tree_class_few_quarter2"
-        tree_class_zero_name = "tree_class_zero2"
-        tree_classless_few_name = "tree_classless_few2"
+        tree_class_few_full_name = "tree_class_few_full3"
+        tree_class_few_half_name = "tree_class_few_half3"
+        tree_class_few_quarter_name = "tree_class_few_quarter3"
+        tree_class_zero_name = "tree_class_zero3"
+        tree_classless_few_name = "tree_classless_few3"
 
         tree_class_few_full_collection = construct_diverse_collection(seed_dir, tree_class_few_dir, embedding_function, seed_collection_name, tree_class_few_full_name, "full", chunking=False)
 
@@ -503,6 +556,164 @@ if __name__ == "__main__":
         tree_class_zero_collection = construct_diverse_collection(seed_dir, tree_class_zero_dir, embedding_function, seed_collection_name, tree_class_zero_name, "full", chunking=False)
 
         tree_classless_few_collection = construct_diverse_collection(seed_dir, tree_classless_few_dir, embedding_function, seed_collection_name, tree_classless_few_name, "full", chunking=False)
+
+    if GENERATE_TOKEN_NOMIC_DBS:
+        checkpoint = "nomic-ai/nomic-embed-text-v1.5"
+
+        matryoshka_dim = 128
+        embedding_function = ChromaNomicEmbedding(checkpoint, matryoshka_dim)
+
+        seed_dir = "./dataset/new_test_code"
+        seed_collection_name = "seed_code_nomic"
+
+        token_class_few_dir = "./dataset/new_generator/token_nomic_class_few"
+        token_classless_few_dir = "./dataset/new_generator/token_nomic_classless_few"
+        token_class_zero_dir = "./dataset/new_generator/token_nomic_class_zero"
+
+        token_class_few_full_name = "token_nomic_class_few_full2"
+        token_class_few_half_name = "token_nomic_class_few_half2"
+        token_class_few_quarter_name = "token_nomic_class_few_quarter2"
+        token_class_zero_name = "token_nomic_class_zero2"
+        token_classless_few_name = "token_nomic_classless_few2"
+
+        token_class_few_full_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_full_name, "full", chunking=False)
+
+        token_class_few_half_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_half_name, "half", chunking=False)
+
+        token_class_few_quarter_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_quarter_name, "quarter", chunking=False)
+
+        token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=False)
+
+        token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=False)
+
+        persistent_client_seed = chromadb.PersistentClient()
+        seed_nomic_collection = persistent_client_seed.get(seed_collection_name, embedding_function=embedding_function)
+
+        test_metrics = CollectionStats("test_2")
+        test_metrics.get_stats(token_class_few_full_collection)
+        temp1 = f"Token_few_full:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_few_half_collection)
+        temp2 = f"Token_few_half:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_few_quarter_collection)
+        temp3 = f"Token_few_quarter:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_class_zero_collection)
+        temp4 =  f"Token_zero:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_classless_few_collection)
+        temp5 =  f"Token_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+
+        print("------------------------------")
+        print(temp1)
+        print("------------------------------")
+        print(temp2)
+        print("------------------------------")
+        print(temp3)
+        print("------------------------------")
+        print(temp4)
+        print("------------------------------")
+        print(temp5)
+        print("------------------------------")
+
+        if TOKEN_NOMIC_MODELS:
+            checkpoint = "nomic-ai/nomic-embed-text-v1.5"
+            matryoshka_dim = 128
+            # encoded dataset locations
+            seed_nomic = "./dataset/encoded_tokens_nomic/seed_tokens_noimc.pth"
+            class_few_full_path = "./dataset/encoded_tokens_nomic/class_few_full.pth"
+            class_few_half_path = "./dataset/encoded_tokens_nomic/class_few_half.pth"
+            class_few_quarter_path = "./dataset/encoded_tokens_nomic/class_few_quarter.pth"
+            class_zero_path = "./dataset/encoded_tokens_nomic/class_zero.pth"
+            classless_few_path = "./dataset/encoded_tokens_nomic/classless_few.pth"
+
+            if os.path.exists(seed_nomic):
+                seed_nomic_dataset = torch.load(seed_nomic)
+            else:
+                seed_nomic_dataset = preprocess_tokenized_dataset_collection_nomic(seed_nomic_collection, checkpoint, matryoshka_dim)
+                torch.save(seed_nomic_dataset, seed_nomic)
+
+            if os.path.exists(class_few_full_path):
+                token_class_few_full_dataset = torch.load(class_few_full_path)
+            else:
+                token_class_few_full_dataset = preprocess_tokenized_dataset_collection_nomic(token_class_few_full_collection, checkpoint, matryoshka_dim)
+                torch.save(token_class_few_full_dataset, class_few_full_path)
+            if os.path.exists(class_few_half_path):
+                token_class_few_half_dataset = torch.load(class_few_half_path)
+            else:
+                token_class_few_half_dataset = preprocess_tokenized_dataset_collection_nomic(token_class_few_half_collection, checkpoint, matryoshka_dim)
+                torch.save(token_class_few_half_dataset, class_few_half_path)
+            if os.path.exists(class_few_quarter_path):
+                token_class_few_quarter_dataset = torch.load(class_few_quarter_path)
+            else:
+                token_class_few_quarter_dataset = preprocess_tokenized_dataset_collection_nomic(token_class_few_quarter_collection, checkpoint, matryoshka_dim)
+                torch.save(token_class_few_quarter_dataset, class_few_quarter_path)
+            if os.path.exists(class_zero_path):
+                token_class_zero_dataset = torch.load(class_zero_path)
+            else:
+                token_class_zero_dataset = preprocess_tokenized_dataset_collection_nomic(token_class_zero_collection, checkpoint, matryoshka_dim)
+                torch.save(token_class_zero_dataset, class_zero_path)
+            if os.path.exists(classless_few_path):
+                token_classless_few_dataset = torch.load(classless_few_path)
+            else:
+                token_classless_few_dataset = preprocess_tokenized_dataset_collection_nomic(token_classless_few_collection, checkpoint, matryoshka_dim)
+                torch.save(token_classless_few_dataset, classless_few_path)
+
+            #load_seed_dataset_tree = torch.load('./dataset/encoded_tokens/seed_tokens.pth')
+
+            # configuration values here:
+            LR_RATE = 3e-4
+            BATCH_SIZE = 32
+            MAX_EPOCHS = 2
+            DEVICE = "cuda:1"
+            NUM_RUNS = 3
+
+            # model values here
+            TOK_EMBED_DIM = 128
+            TOK_IN_CHANNELS = 72
+            TOK_HIDDEN_LAY1 = 36
+            TOK_HIDDEN_LAY2 = 18
+            GRAPH_CLASS = 1
+
+            # now to get all the datasets into datalaoders
+            loader_seed_dataset_tree = DataLoader(dataset=seed_nomic_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_full_dataset = DataLoader(dataset=token_class_few_full_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_half_dataset = DataLoader(dataset=token_class_few_half_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_few_quarter_dataset = DataLoader(dataset=token_class_few_quarter_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_class_zero_dataset = DataLoader(dataset=token_class_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_tree_classless_few_dataset = DataLoader(dataset=token_classless_few_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+            # to make it easier to iterate over all the dataset, we will add them into a list now, with a name for the second entry in the tuple
+            loader_list = []
+            loader_list.append((loader_seed_dataset_tree, "seed_token"))
+            loader_list.append((loader_tree_class_few_full_dataset, "class_few_full_token"))
+            loader_list.append((loader_tree_class_few_half_dataset, "class_few_half_token"))
+            loader_list.append((loader_tree_class_few_quarter_dataset, "class_few_quarter_token"))
+            loader_list.append((loader_tree_class_zero_dataset, "class_zero_token"))
+            loader_list.append((loader_tree_classless_few_dataset, "classless_few_token"))
+
+            # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
+            for run in range(NUM_RUNS):
+                for (loader, name) in loader_list:
+                    model = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
+                    optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
+                    loss_function = nn.BCELoss()
+                    model.train()
+
+                    for epoch in range(1, MAX_EPOCHS):
+                        overall_loss = 0
+                        for batch_idx, (data, label) in enumerate(loader):
+                            data = data.to(DEVICE)
+                            label = label.to(DEVICE)
+                            optimizer.zero_grad()
+                            output = model(data)
+                            loss = loss_function(output.view(label.shape[0]), label.float())
+                            overall_loss += loss.item()
+                            loss.backward()
+                            optimizer.step()
+                        print("\tSeed Epoch", epoch, "\tSeed Average Loss: ", overall_loss/((batch_idx+1)*BATCH_SIZE))
+
+                    # now to save the model 
+                    torch.save(model.state_dict(), f"./models/nomic_token_models/{name}/model_{run}.pth")
+                    del model
+
 
     if TOKEN_METRICS:
         token_class_few_full_name = "token_class_few_full"
@@ -658,11 +869,11 @@ if __name__ == "__main__":
 
 
     if TREE_METRICS:
-        tree_class_few_full_name = "tree_class_few_full2"
-        tree_class_few_half_name = "tree_class_few_half2"
-        tree_class_few_quarter_name = "tree_class_few_quarter2"
-        tree_class_zero_name = "tree_class_zero2"
-        tree_classless_few_name = "tree_classless_few2"
+        tree_class_few_full_name = "tree_class_few_full3"
+        tree_class_few_half_name = "tree_class_few_half3"
+        tree_class_few_quarter_name = "tree_class_few_quarter3"
+        tree_class_zero_name = "tree_class_zero3"
+        tree_classless_few_name = "tree_classless_few3"
 
         checkpoint = "Salesforce/codet5p-110m-embedding"
         tree_checkpoint = "./models/tree_ae/tree_ae.pth"

@@ -263,7 +263,7 @@ class Generator:
 
 
 if __name__ == "__main__":
-    write_directory = "./dataset/new_generator/token_nomic_class_few"
+    write_directory = "./dataset/new_generator/token_nomic_classless_few"
     few_vs_zero_logs = write_directory + "/distances.npz"
     checkpoint = "Salesforce/codet5p-110m-embedding"
     nomic_checkpoint = "nomic-ai/nomic-embed-text-v1.5"
@@ -279,15 +279,15 @@ if __name__ == "__main__":
     vectordb_seed = persistent_client_tok.get_collection("seed_code_nomic", embedding_function=embedding_function_chroma_nomic)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="few", metric="class", threshold=0.10, output=write_directory)
+    generator = Generator(vectordb_seed, prompting="few", metric="classless", threshold=0.12, output=write_directory)
 
     zero_shot_distances = []
     few_shot_distances = []
     print("-----------------")
-    print(f"{len(os.listdir(write_directory))} / 400 files generated")
+    print(f"{len(os.listdir(write_directory))} / 200 files generated")
     print("-----------------")
     run_counter = 0
-    while len(os.listdir(write_directory)) < 400:
+    while len(os.listdir(write_directory)) < 200:
         avg_dist, few_avg_dist = generator.generation_pass()
         if avg_dist != 0:
             zero_shot_distances.append(avg_dist)

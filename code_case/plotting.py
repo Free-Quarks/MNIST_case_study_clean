@@ -37,10 +37,14 @@ if __name__ == "__main__":
 
     # plotting
     # token-class few vs zero
+
+    # Define the bin edges for both datasets
+    bins = np.linspace(min(min(token_full_zero_class), min(token_class_few_full_few)), max(max(token_full_zero_class), max(token_class_few_full_few)), 30)
+
     plt.figure(figsize=(12, 10))
 
-    plt.scatter(range(0,len(token_full_zero_class)), token_full_zero_class, color='blue', label='Zero')
-    plt.scatter(range(0,len(token_class_few_full_few)), token_class_few_full_few, color='red', label='Few')
+    plt.hist(token_full_zero_class, bins="auto", alpha=0.8, color='blue', edgecolor='blue', label='Zero', density=True, histtype='step')
+    plt.hist(token_class_few_full_few, bins="auto", alpha=0.8, color='red', edgecolor='red', label='Few', density=True, histtype='step')
     plt.title('Token-Class: Few vs. Zero')
     plt.xlabel('Data Point')
     plt.ylabel('Class Based Diversity Metric')
@@ -50,11 +54,12 @@ if __name__ == "__main__":
     plt.savefig("./figs/token_class_few_vs_zero.png")
 
     # token-classless few vs zero
+    bins = np.linspace(min(min(token_classless_few_full_zero), min(token_classless_few_full_few)), max(max(token_classless_few_full_zero), max(token_classless_few_full_few)), 30)
     plt.clf()
     plt.figure(figsize=(12, 10))
 
-    plt.scatter(range(0,len(token_classless_few_full_zero)), token_classless_few_full_zero, color='blue', label='Zero')
-    plt.scatter(range(0,len(token_classless_few_full_few)), token_classless_few_full_few, color='red', label='Few')
+    plt.hist(token_classless_few_full_zero, bins=bins, alpha=0.5, color='blue', edgecolor='black', label='Zero', density=True)
+    plt.hist(token_classless_few_full_few, bins=bins, alpha=0.5, color='red', edgecolor='black', label='Few', density=True)
     plt.title('Token-Classless: Few vs. Zero')
     plt.xlabel('Data Point')
     plt.ylabel('Classless Based Diversity Metric')
@@ -64,11 +69,13 @@ if __name__ == "__main__":
     plt.savefig("./figs/token_classless_few_vs_zero.png")
 
     # tree-classless few vs zero
+    bins = np.linspace(min(min(tree_classless_few_zero), min(tree_classless_few_tree)), max(max(tree_classless_few_zero), max(tree_classless_few_tree)), 30)    
+
     plt.clf()
     plt.figure(figsize=(12, 10))
 
-    plt.scatter(range(0,len(tree_classless_few_zero)), tree_classless_few_zero, color='blue', label='Zero')
-    plt.scatter(range(0,len(tree_classless_few_tree)), tree_classless_few_tree, color='red', label='Few')
+    plt.hist(tree_classless_few_zero, bins=bins, alpha=0.5, color='blue', edgecolor='black', label='Zero', density=True)
+    plt.hist(tree_classless_few_tree, bins=bins, alpha=0.5, color='red', edgecolor='black', label='Few', density=True)
     plt.title('Tree-Classless: Few vs. Zero')
     plt.xlabel('Data Point')
     plt.ylabel('Classless Based Diversity Metric')
@@ -78,11 +85,12 @@ if __name__ == "__main__":
     plt.savefig("./figs/tree_classless_few_vs_zero.png")
 
     # tree-class few vs zero
+    bins = np.linspace(min(min(tree_full_zero_class), min(tree_class_few_tree)), max(max(tree_full_zero_class), max(tree_class_few_tree)), 30)  
     plt.clf()
     plt.figure(figsize=(12, 10))
 
-    plt.scatter(range(0,len(tree_full_zero_class)), tree_full_zero_class, color='blue', label='Zero')
-    plt.scatter(range(0,len(tree_class_few_tree)), tree_class_few_tree, color='red', label='Few')
+    plt.hist(tree_full_zero_class, bins=bins, alpha=0.5, color='blue', edgecolor='black', label='Zero', density=True)
+    plt.hist(tree_class_few_tree, bins=bins, alpha=0.5, color='red', edgecolor='black', label='Few', density=True)
     plt.title('Tree-Class: Few vs. Zero')
     plt.xlabel('Data Point')
     plt.ylabel('Class Based Diversity Metric')

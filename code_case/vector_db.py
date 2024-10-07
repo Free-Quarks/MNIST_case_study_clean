@@ -51,7 +51,7 @@ class ChromaCodet5pEmbedding(EmbeddingFunction):
 
 class ChromaNomicEmbedding(EmbeddingFunction):
     def __init__(self, checkpoint, matryoshka_dim):
-        self.model =SentenceTransformer(checkpoint, trust_remote_code=True)
+        self.model = SentenceTransformer(checkpoint, trust_remote_code=True)
         self.matryoshka_dim = matryoshka_dim
     
     def __call__(self, texts: Documents) -> chromadb.Embeddings:
@@ -181,25 +181,27 @@ if __name__ == "__main__":
         print(results['distances']) # this is a dict of 'ids', 'distances', 'metadatas', 'embeddings', 'documents', 'uris', 'data', 'included'
         #print(results["documents"])
     elif CONSTRUCT_CHROMA_NOMIC:
-        data_dir = "./dataset/new_test_code"
+        # this will create all of the collections for the data generated using nomic embeddings for 
         matryoshka_dim = 128
-
         embedding_function_chroma_nomic = ChromaNomicEmbedding(NOMIC_CHECKPOINT, matryoshka_dim)
+
+        # seed dataset
+        data_dir = "./dataset/new_test_code"
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
 
         persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
         collection = persistent_client.get_or_create_collection("seed_code_nomic", embedding_function=embedding_function_chroma_nomic)
-        
-        for i, entry in enumerate(raw_docs):
-            collection.add(ids=f"{i}", embeddings = embedding_function_chroma_nomic(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
-            print(f"{i} of {len(raw_docs)} added to db")
+        if collection.count() < 20:
+            for i, entry in enumerate(raw_docs):
+                collection.add(ids=f"{i}", embeddings = embedding_function_chroma_nomic(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+                print(f"{i} of {len(raw_docs)} added to db")
 
-        results = collection.query(
-            query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you
-            n_results=2 # how many results to return
-        )
+            results = collection.query(
+                query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you
+                n_results=2 # how many results to return
+            )
+            print(results)
 
-        print(results)
     else:
         embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
         persistent_client = chromadb.PersistentClient() # default settings
