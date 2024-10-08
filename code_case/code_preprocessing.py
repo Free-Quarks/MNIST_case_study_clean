@@ -568,7 +568,7 @@ def encode_graph(graph, model_checkpoint):
 
     # initialize encoder for tokenization
     checkpoint = model_checkpoint
-    device = "cuda:0"  # for GPU usage or "cpu" for CPU usage
+    device = "cuda:1"  # for GPU usage or "cpu" for CPU usage
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
     model = AutoModel.from_pretrained(checkpoint, trust_remote_code=True).to(device)
 
@@ -645,9 +645,9 @@ def encode_node(node, tokenizer, model):
                 node.tokens = node.name
 
     if node.tokens != None:
-        inputs = tokenizer.encode(node.tokens, truncation=True, return_tensors="pt").to("cuda")  
+        inputs = tokenizer.encode(node.tokens, truncation=True, return_tensors="pt").to("cuda:1")  
     else:
-        inputs = tokenizer.encode("None", truncation=True, return_tensors="pt").to("cuda")
+        inputs = tokenizer.encode("None", truncation=True, return_tensors="pt").to("cuda:1")
     
     encoded_node = model(inputs).to("cpu").detach()
 

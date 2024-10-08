@@ -76,7 +76,7 @@ class TokenClassificationModel(nn.Module):
         x = self.dropout2(x)
         x = self.hidden_layer3(x)
         x = F.relu(x)
-        x_res_18 = x_res[:, :, :18]
+        x_res_18 = x_res[:, :18]
         x = x + x_res_18
         x = self.hidden_2_class(x)
         z = F.sigmoid(x)

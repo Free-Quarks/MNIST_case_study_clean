@@ -19,7 +19,7 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-DEVICE = "cuda"
+DEVICE = "cuda:1"
 CONSTRUCT_CHROMA = False
 CONSTRUCT_CHROMA_TREE = False
 CHROMA_TREE = False

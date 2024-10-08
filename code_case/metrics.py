@@ -41,13 +41,14 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 
 TEST_CODE = False
 GENERATE_TOKEN_DBS = False
-GENERATE_TREE_DBS = True
+GENERATE_TREE_DBS = False
 GENERATE_TOKEN_NOMIC_DBS = True
-TOKEN_NOMIC_MODELS = False
+TOKEN_NOMIC_MODELS = True
 TOKEN_METRICS = False
 TOKEN_MODELS = False
 TREE_METRICS = True
-TREE_MODELS = False
+TREE_MODELS = True
+CONSTRUCT_NOMIC = False
 
 class CollectionStats:
     def __init__(self, collection_name):
@@ -576,18 +577,35 @@ if __name__ == "__main__":
         token_class_zero_name = "token_nomic_class_zero2"
         token_classless_few_name = "token_nomic_classless_few2"
 
-        token_class_few_full_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_full_name, "full", chunking=False)
+        if CONSTRUCT_NOMIC:
+            token_class_few_full_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_full_name, "full", chunking=False)
 
-        token_class_few_half_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_half_name, "half", chunking=False)
+            token_class_few_half_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_half_name, "half", chunking=False)
 
-        token_class_few_quarter_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_quarter_name, "quarter", chunking=False)
+            token_class_few_quarter_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_quarter_name, "quarter", chunking=False)
 
-        token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=False)
+            token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=False)
 
-        token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=False)
+            token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=False)
+
+        else:
+            persistent_client_few_full = chromadb.PersistentClient()
+            token_class_few_full_collection = persistent_client_few_full.get_collection(token_class_few_full_name, embedding_function=embedding_function)
+
+            persistent_client_few_half = chromadb.PersistentClient()
+            token_class_few_half_collection = persistent_client_few_half.get_collection(token_class_few_half_name, embedding_function=embedding_function)
+
+            persistent_client_few_quarter = chromadb.PersistentClient()
+            token_class_few_quarter_collection = persistent_client_few_half.get_collection(token_class_few_quarter_name, embedding_function=embedding_function)
+
+            persistent_client_zero = chromadb.PersistentClient()
+            token_class_zero_collection = persistent_client_zero.get_collection(token_class_zero_name, embedding_function=embedding_function)
+
+            persistent_client_classless = chromadb.PersistentClient()
+            token_classless_few_collection = persistent_client_classless.get_collection(token_classless_few_name, embedding_function=embedding_function)
 
         persistent_client_seed = chromadb.PersistentClient()
-        seed_nomic_collection = persistent_client_seed.get(seed_collection_name, embedding_function=embedding_function)
+        seed_nomic_collection = persistent_client_seed.get_collection(seed_collection_name, embedding_function=embedding_function)
 
         test_metrics = CollectionStats("test_2")
         test_metrics.get_stats(token_class_few_full_collection)
@@ -617,7 +635,7 @@ if __name__ == "__main__":
             checkpoint = "nomic-ai/nomic-embed-text-v1.5"
             matryoshka_dim = 128
             # encoded dataset locations
-            seed_nomic = "./dataset/encoded_tokens_nomic/seed_tokens_noimc.pth"
+            seed_nomic = "./dataset/encoded_tokens_nomic/seed_tokens_nomic.pth"
             class_few_full_path = "./dataset/encoded_tokens_nomic/class_few_full.pth"
             class_few_half_path = "./dataset/encoded_tokens_nomic/class_few_half.pth"
             class_few_quarter_path = "./dataset/encoded_tokens_nomic/class_few_quarter.pth"
@@ -930,11 +948,11 @@ if __name__ == "__main__":
         print("------------------------------")
         if TREE_MODELS:
             # see if the dataset have already been generated
-            class_few_full_path = "./dataset/encoded_trees/class_few_full.pth"
-            class_few_half_path = "./dataset/encoded_trees/class_few_half.pth"
-            class_few_quarter_path = "./dataset/encoded_trees/class_few_quarter.pth"
-            class_zero_path = "./dataset/encoded_trees/class_zero.pth"
-            classless_few_path = "./dataset/encoded_trees/classless_few.pth"
+            class_few_full_path = "./dataset/encoded_trees/class_few_full3.pth"
+            class_few_half_path = "./dataset/encoded_trees/class_few_half3.pth"
+            class_few_quarter_path = "./dataset/encoded_trees/class_few_quarter3.pth"
+            class_zero_path = "./dataset/encoded_trees/class_zero3.pth"
+            classless_few_path = "./dataset/encoded_trees/classless_few3.pth"
 
             if os.path.exists(class_few_full_path):
                 tree_class_few_full_dataset = torch.load(class_few_full_path)
