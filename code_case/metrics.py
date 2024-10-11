@@ -10,7 +10,7 @@ from langchain.pydantic_v1 import BaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from classification_models import TokenClassificationModel, TreeClassificationModel
+from classification_models import TokenClassificationModel, TreeClassificationModel, TokenClassificationModel2
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
 from token_classification_trainer import preprocess_tokenized_dataset, TokenDatasetWrapper
 from code_preprocessing import preprocess_tree_query
@@ -42,12 +42,12 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 TEST_CODE = False
 GENERATE_TOKEN_DBS = False
 GENERATE_TREE_DBS = False
-GENERATE_TOKEN_NOMIC_DBS = True
-TOKEN_NOMIC_MODELS = True
-TOKEN_METRICS = False
-TOKEN_MODELS = False
-TREE_METRICS = True
-TREE_MODELS = True
+GENERATE_TOKEN_NOMIC_DBS = False
+TOKEN_NOMIC_MODELS = False
+TOKEN_METRICS = True
+TOKEN_MODELS = True
+TREE_METRICS = False
+TREE_MODELS = False
 CONSTRUCT_NOMIC = False
 
 class CollectionStats:
@@ -863,7 +863,7 @@ if __name__ == "__main__":
             # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
             for run in range(NUM_RUNS):
                 for (loader, name) in loader_list:
-                    model = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
+                    model = TokenClassificationModel2(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
                     optimizer = optim.Adam(model.parameters(), lr=LR_RATE) # adam optimizer
                     loss_function = nn.BCELoss()
                     model.train()

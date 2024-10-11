@@ -81,3 +81,31 @@ class TokenClassificationModel(nn.Module):
         x = self.hidden_2_class(x)
         z = F.sigmoid(x)
         return z
+
+class TokenClassificationModel2(nn.Module):
+    def __init__(self, embed_dim, in_channels, hidden_layer1, hidden_layer2, graph_classes):
+        super(TokenClassificationModel2, self).__init__()
+        self.dropout1 = nn.Dropout(p=0.1)
+        self.dropout2 = nn.Dropout(p=0.1)
+        self.embed_contraction = nn.Linear(embed_dim, in_channels)
+        self.hidden_layer1 = nn.Linear(in_channels, hidden_layer1)
+        self.hidden_layer2 = nn.Linear(hidden_layer1, hidden_layer2)
+        self.hidden_layer3 = nn.Linear(hidden_layer2, hidden_layer2)
+        self.hidden_2_class = nn.Linear(hidden_layer2, graph_classes)
+
+    def forward(self, x):
+        x = self.dropout1(x)
+        x = self.embed_contraction(x)
+        x_res = F.relu(x)
+        x = self.hidden_layer1(x_res)
+        x = F.relu(x)
+        x = self.hidden_layer2(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+        x = self.hidden_layer3(x)
+        x = F.relu(x)
+        x_res_18 = x_res[:, :, :18]
+        x = x + x_res_18
+        x = self.hidden_2_class(x)
+        z = F.sigmoid(x)
+        return z
