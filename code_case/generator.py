@@ -47,6 +47,12 @@ class DataOutput(BaseModel):
     """how to format the generated code"""
     code: str = Field(description="should be the code generated")
 
+# defining our data generation output class
+class LLMOutput(BaseModel):
+    """How to format about if a give code script is sufficiently different from other given examples"""
+    answer: bool = Field(description="boolean of True if it is diverse enough and False if not diverse enough")
+    suggestion: str = Field(description="suggestion of how to change the code to make it more diverse")
+
 class Generator:
     def __init__(self, vectordb, prompting="few", metric="class", threshold=0.3, output="./dataset/default"):
         """
@@ -145,7 +151,7 @@ class Generator:
         """
         collection = self.vectordb
 
-        if self.metric != "class":
+        if self.metric == "classless":
 
             results = collection.query(
                 query_texts=[data_point], # Chroma will embed this for you
@@ -163,6 +169,48 @@ class Generator:
                     content = file.read()
                 file.close()
                 data_entries.append(content)
+
+            return (avg_dist, data_entries)
+        
+        elif self.metric == "llm":
+            results = collection.query(
+                query_texts=[data_point], # Chroma will embed this for you
+                n_results=2 # how many results to return
+            )
+
+            distances = results['distances'][0]
+            avg_dist = np.mean(distances)
+
+            # making an assumption here about the format of results
+            data_entries = []
+            for source in results['metadatas'][0]:
+                filename = source['source']
+                with open(filename, 'r') as file:
+                    content = file.read()
+                file.close()
+                data_entries.append(content)
+            
+            # use the pulled similar code examples and let the LLM decide if they are different enough
+
+            model = self.model
+
+            data_parser = JsonOutputParser(pydantic_object=LLMOutput)
+            data_format_instructions = data_parser.get_format_instructions()
+
+            prompt = f"If the goal is to test a code-based NLP model, is the following code example sufficiently different from the following other examples we are currently using to test the model and what suggestions would you give to modify the example to make it more diverse from the currently used examples? \n\n New Example:\n{data_point}\n\n New Examples: \n{data_entries[0]}\n\n {data_entries[1]}"
+
+            data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "{prompt}")])
+
+            data_chain = data_prompt_template | model | data_parser
+            data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
+            answer = data_result['answer']
+            suggestions = data_result['suggestion']
+            print(f"{suggestions}")
+
+            if answer:
+                avg_dist = 1
+            else:
+                avg_dist = 0
 
             return (avg_dist, data_entries)
 
@@ -263,7 +311,7 @@ class Generator:
 
 
 if __name__ == "__main__":
-    write_directory = "./dataset/new_generator/token_nomic_classless_few"
+    write_directory = "./dataset/new_generator/token_llm_zero"
     few_vs_zero_logs = write_directory + "/distances.npz"
     checkpoint = "Salesforce/codet5p-110m-embedding"
     nomic_checkpoint = "nomic-ai/nomic-embed-text-v1.5"
@@ -271,23 +319,23 @@ if __name__ == "__main__":
     url = "http://localhost:8000/code2fn/fn-given-filepaths"
     matryoshka_dim = 128
 
-    ####embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
     ####embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
-    embedding_function_chroma_nomic = ChromaNomicEmbedding(nomic_checkpoint, matryoshka_dim)
+    ####embedding_function_chroma_nomic = ChromaNomicEmbedding(nomic_checkpoint, matryoshka_dim)
     persistent_client_tok = chromadb.PersistentClient() # default settings
     # this gets the collection since it's already present
-    vectordb_seed = persistent_client_tok.get_collection("seed_code_nomic", embedding_function=embedding_function_chroma_nomic)
+    vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="few", metric="classless", threshold=0.12, output=write_directory)
+    generator = Generator(vectordb_seed, prompting="zero", metric="llm", threshold=0.5, output=write_directory)
 
     zero_shot_distances = []
     few_shot_distances = []
     print("-----------------")
-    print(f"{len(os.listdir(write_directory))} / 200 files generated")
+    print(f"{len(os.listdir(write_directory))} / 400 files generated")
     print("-----------------")
     run_counter = 0
-    while len(os.listdir(write_directory)) < 200:
+    while len(os.listdir(write_directory)) < 400:
         avg_dist, few_avg_dist = generator.generation_pass()
         if avg_dist != 0:
             zero_shot_distances.append(avg_dist)

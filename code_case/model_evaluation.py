@@ -32,6 +32,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from scipy.stats import skew, kurtosis
+import math
 
 
 from tree_encoder_model import GNNModel
@@ -40,8 +41,51 @@ import pickle
 
 from vector_db import ChromaCodet5pEmbedding, ChromaTreeEmbedding, ChromaNomicEmbedding
 
+
+import torch
+
+def mcc_metric(y_pred, y_true):
+    """
+    Compute Matthew's Correlation Coefficient (MCC) for binary classification from sigmoid outputs.
+    
+    Args:
+    - y_true: Ground truth binary labels (tensor of shape [batch_size]).
+    - y_pred: Predicted probabilities after sigmoid activation (tensor of shape [batch_size]).
+    
+    Returns:
+    - mcc: The Matthew's Correlation Coefficient (float).
+    """
+    
+    # Apply a threshold to get binary predictions (e.g., threshold of 0.5)
+    y_pred = (y_pred >= 0.5).float()
+    
+    # Compute confusion matrix components, we get a lot of 0's here which break the metric, so +1's are to help with that
+    tp = ((y_pred == 1) & (y_true == 1)).sum().item() + 1  # True Positives
+    tn = ((y_pred == 0) & (y_true == 0)).sum().item() + 1 # True Negatives
+    fp = ((y_pred == 1) & (y_true == 0)).sum().item() + 1 # False Positives
+    fn = ((y_pred == 0) & (y_true == 1)).sum().item() + 1 # False Negatives
+    
+    # Compute numerator and denominator for MCC
+    numerator = (tp * tn) - (fp * fn)
+    denominator = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    
+    # To avoid division by zero
+    if denominator == 0:
+        print("------------")
+        print(f"tp: {tp}")
+        print(f"fp: {fp}")
+        print(f"tn: {tn}")
+        print(f"fn: {fn}")
+        print("------------")
+        return 0.0
+    
+    # Compute MCC
+    mcc = numerator / denominator
+    return mcc
+
+
 if __name__ == "__main__":
-    BATCH_SIZE = 4
+    BATCH_SIZE = 26
     DEVICE = "cuda:1"
     # load the test datasets
     token_test_data = torch.load("./dataset/test_data/token_dataset.pth")
@@ -56,6 +100,8 @@ if __name__ == "__main__":
     nomic_dir = "./models/nomic_token_models"
     tree_dir = "./models/tree_models"
 
+    ll_function = nn.BCELoss()
+
     # first is to evalue the token based models
     TOK_EMBED_DIM = 256
     TOK_IN_CHANNELS = 72
@@ -65,6 +111,8 @@ if __name__ == "__main__":
     model = TokenClassificationModel2(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
     last_subdir = ""
     results = {}
+    results_ll = {}
+    results_mcc = {}
     # Walk through the directory
     for dirpath, _dirnames, filenames in os.walk(token_dir):
         #print(f"Current Directory: {dirpath}")
@@ -74,8 +122,13 @@ if __name__ == "__main__":
             local_file = os.path.join(dirpath,filename)
             if subdir != last_subdir:
                 results[subdir] = []
+                results_ll[subdir] = []
+                results_mcc[subdir] = []
                 # evaluate test data on first model
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
                 model.eval()
@@ -88,13 +141,22 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
+
             else:
                 # evaluate test on the remaining models of same type and append to the dict
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
                 model.eval()
@@ -107,12 +169,19 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
             last_subdir = subdir
     token_data = pd.DataFrame(results)
+    token_data_ll = pd.DataFrame(results_ll)
+    token_data_mcc = pd.DataFrame(results_mcc)
 
     # second is to evalate the nomic token based models
     TOK_EMBED_DIM = 128
@@ -123,6 +192,8 @@ if __name__ == "__main__":
     model = TokenClassificationModel(TOK_EMBED_DIM, TOK_IN_CHANNELS, TOK_HIDDEN_LAY1, TOK_HIDDEN_LAY2, GRAPH_CLASS).to(DEVICE)
     last_subdir = ""
     results = {}
+    results_ll = {}
+    results_mcc = {}
     # Walk through the directory
     for dirpath, dirnames, filenames in os.walk(nomic_dir):
         #print(f"Current Directory: {dirpath}")
@@ -132,8 +203,13 @@ if __name__ == "__main__":
             local_file = os.path.join(dirpath,filename)
             if subdir != last_subdir:
                 results[subdir] = []
+                results_ll[subdir] = []
+                results_mcc[subdir] = []
                 # evaluate test data on first model
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 # load the model
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
@@ -147,13 +223,21 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
             else:
                 # evaluate test on the remaining models of same type and append to the dict
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 # load the model
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
@@ -167,17 +251,26 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
             last_subdir = subdir
     nomic_data = pd.DataFrame(results)
+    nomic_data_ll = pd.DataFrame(results_ll)
+    nomic_data_mcc = pd.DataFrame(results_mcc)
 
     # lastly is to evaluate the tree based models
     model = TreeClassificationModel(EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, GRAPH_CLASS).to(DEVICE)
     last_subdir = ""
     results = {}
+    results_ll = {}
+    results_mcc = {}
     # Walk through the directory
     for dirpath, dirnames, filenames in os.walk(tree_dir):
         #print(f"Current Directory: {dirpath}")
@@ -187,8 +280,13 @@ if __name__ == "__main__":
             local_file = os.path.join(dirpath,filename)
             if subdir != last_subdir:
                 results[subdir] = []
+                results_ll[subdir] = []
+                results_mcc[subdir] = []
                 # evaluate test data on first model
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
                 model.eval()
@@ -202,13 +300,21 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
             else:
                 # evaluate test on the remaining models of same type and append to the dict
                 total_incorrect = 0
+                ll_total = 0
+                mcc_total = 0
+                mcc_running = []
                 model.load_state_dict(torch.load(local_file))
                 # Set the model to evaluation mode and disable gradient calculations
                 model.eval()
@@ -222,12 +328,19 @@ if __name__ == "__main__":
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
+                        ll_total += ll_function(output.view(label.shape[0]), label.float()).item()
+                        mcc_running.append(mcc_metric(output.view(label.shape[0]), label.float()))
                 accuracy = (len(token_test_data) - total_incorrect)/len(token_test_data)
                 accuracy_percent = accuracy * 100
+                mcc_total = sum(mcc_running) / len(mcc_running)
                 #print(f'Accuracy: {accuracy * 100:.2f}%')
                 results[subdir].append(accuracy_percent)
+                results_ll[subdir].append(ll_total)
+                results_mcc[subdir].append(mcc_total)
             last_subdir = subdir
     tree_data = pd.DataFrame(results)
+    tree_data_ll = pd.DataFrame(results_ll)
+    tree_data_mcc = pd.DataFrame(results_mcc)
 
     #print(token_data)
     #print(nomic_data)
@@ -237,6 +350,26 @@ if __name__ == "__main__":
     latex_nomic = nomic_data.to_latex(index=False)
     latex_tree = tree_data.to_latex(index=False)
 
+    latex_token_ll = token_data_ll.to_latex(index=False)
+    latex_nomic_ll = nomic_data_ll.to_latex(index=False)
+    latex_tree_ll = tree_data_ll.to_latex(index=False)
+
+    latex_token_mcc = token_data_mcc.to_latex(index=False)
+    latex_nomic_mcc = nomic_data_mcc.to_latex(index=False)
+    latex_tree_mcc = tree_data_mcc.to_latex(index=False)
+
+    print('Accuracy:')
     print(latex_token)
     print(latex_nomic)
     print(latex_tree)
+    print('--------------')
+    print('Log Loss:')
+    print(latex_token_ll)
+    print(latex_nomic_ll)
+    print(latex_tree_ll)
+    print('--------------')
+    print('MCC:')
+    print(latex_token_mcc)
+    print(latex_nomic_mcc)
+    print(latex_tree_mcc)
+    print('--------------')
