@@ -16,6 +16,7 @@ import random as rd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from enum import Enum
 
 
 from tree_encoder_model import GNNModel
@@ -52,6 +53,15 @@ class LLMOutput(BaseModel):
     """How to format about if a give code script is sufficiently different from other given examples"""
     answer: bool = Field(description="boolean of True if it is diverse enough and False if not diverse enough")
     suggestion: str = Field(description="suggestion of how to change the code to make it more diverse")
+
+class ModelType(str, Enum):
+    """Enum of the avialable model types, being only compartmental or agent-based."""
+    compartmental = "compartmental"
+    abm = "agent-based"
+
+class ModelChecker(BaseModel):
+    """How to format which type of epidemiology model the give code example is an implemenation of"""
+    model_type: ModelType = Field(description="This is the model type of the code example. Should be either compartmental or agent-based")
 
 class Generator:
     def __init__(self, vectordb, prompting="few", metric="class", threshold=0.3, output="./dataset/default"):
@@ -138,7 +148,10 @@ class Generator:
         data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "{prompt}")])
 
         data_chain = data_prompt_template | model | data_parser
-        data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
+        try:
+            data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
+        except:
+            data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
         code_query = data_result['code']
 
         return (code_query, model_class, prompt)
@@ -170,7 +183,9 @@ class Generator:
                 file.close()
                 data_entries.append(content)
 
-            return (avg_dist, data_entries)
+            llm_rewrite = ""
+
+            return (avg_dist, data_entries, llm_rewrite)
         
         elif self.metric == "llm":
             results = collection.query(
@@ -178,8 +193,8 @@ class Generator:
                 n_results=2 # how many results to return
             )
 
-            distances = results['distances'][0]
-            avg_dist = np.mean(distances)
+            #distances = results['distances'][0]
+            #avg_dist = np.mean(distances)
 
             # making an assumption here about the format of results
             data_entries = []
@@ -191,13 +206,14 @@ class Generator:
                 data_entries.append(content)
             
             # use the pulled similar code examples and let the LLM decide if they are different enough
-
             model = self.model
 
             data_parser = JsonOutputParser(pydantic_object=LLMOutput)
             data_format_instructions = data_parser.get_format_instructions()
+            code_parser = JsonOutputParser(pydantic_object=DataOutput)
+            code_format_instructions = code_parser.get_format_instructions()
 
-            prompt = f"If the goal is to test a code-based NLP model, is the following code example sufficiently different from the following other examples we are currently using to test the model and what suggestions would you give to modify the example to make it more diverse from the currently used examples? \n\n New Example:\n{data_point}\n\n New Examples: \n{data_entries[0]}\n\n {data_entries[1]}"
+            prompt = f"If the goal is to test a code-based NLP model, is the following code example sufficiently different from the following other examples we are currently using to test the model and what suggestions would you give to modify the example to make it more diverse from the currently used examples? \n\n New Example:\n{data_point}\n\n Previous/Current Examples: \n{data_entries[0]}\n\n {data_entries[1]}"
 
             data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "{prompt}")])
 
@@ -205,14 +221,21 @@ class Generator:
             data_result = data_chain.invoke({"prompt": prompt, "data_format_instructions": data_format_instructions})
             answer = data_result['answer']
             suggestions = data_result['suggestion']
+            print("*******")
+            print(f"New code is diverse?: {answer}")
             print(f"{suggestions}")
 
             if answer:
                 avg_dist = 1
+                llm_rewrite = ""
             else:
-                avg_dist = 0
+                avg_dist = 0.75 # this let's us know if we rewrote the code
+                prompt = f"Rewrite the following code with the given suggestions, but ignore any suggestions that would change the base type of model. \n\n Code:\n{data_point}\n\n Suggestions: \n{suggestions}"
+                code_chain = data_prompt_template | model | code_parser
+                code_result = code_chain.invoke({"prompt": prompt, "data_format_instructions": code_format_instructions})
+                llm_rewrite = code_result['code']
 
-            return (avg_dist, data_entries)
+            return (avg_dist, data_entries, llm_rewrite)
 
         else:
             n_results = 250
@@ -253,7 +276,9 @@ class Generator:
 
             print(f"logging: {data_class}")
 
-            return (avg_dist, data_entries)
+            llm_rewrite = ""
+
+            return (avg_dist, data_entries, llm_rewrite)
     
     def few_shot_generate_data(self, prompt, data, db_entries):
         """
@@ -278,7 +303,10 @@ class Generator:
         few_shot_prompt_chain = few_shot_prompt_template | model | data_parser
 
         # invoke the chain
-        data_result = few_shot_prompt_chain.invoke({"example_0": example_0, "example_1": example_1, "example_2": example_2, "data": data, "prompt": prompt, "format_instructions": format_instructions})
+        try:
+            data_result = few_shot_prompt_chain.invoke({"example_0": example_0, "example_1": example_1, "example_2": example_2, "data": data, "prompt": prompt, "format_instructions": format_instructions})
+        except:
+            data_result = few_shot_prompt_chain.invoke({"example_0": example_0, "example_1": example_1, "example_2": example_2, "data": data, "prompt": prompt, "format_instructions": format_instructions})            
         code_query = data_result['code']
 
         return code_query
@@ -293,25 +321,80 @@ class Generator:
         f.close()
 
     def generation_pass(self):
+        """
+        This performs one pass of data generation based on given arguments. This is includes a final test to make sure the labels are correct as a final sanity check. The compounding stocastic responses from the LLM can result in label drift on occasion. 
+
+        Inputs: (self)
+        Returns: 
+            avg_dist (float): the distance the data point is from it's nearest neighbor in the seed dataset
+            few_avg_dist (float): the distance the data point is from it's nearest neighbors, if few-shot is run, else is 0
+        """
+        # this is for label sanity checks
+        test_label = False
+        model = self.model
+        data_parser = JsonOutputParser(pydantic_object=ModelChecker)
+        data_format_instructions = data_parser.get_format_instructions()
+        data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "Determine whether the give code is an implementation of a compartmental model or an agent-based model. \n Code:\n  {code}")])
+        data_chain = data_prompt_template | model | data_parser
+
         avg_dist = 0
         few_avg_dist = 0
         data_point, data_class, prompt = self.generate_data()
-        avg_dist, data_entries = self.compare_data_diversity(data_point, data_class)
+        avg_dist, data_entries, llm_rewrite = self.compare_data_diversity(data_point, data_class)
         print(f"zero-shot distance: {avg_dist}")
-        if avg_dist >= self.threshold:
-            self.data_writer(data_point, data_class)
+        if llm_rewrite == "":
+            data_result = data_chain.invoke({"code": data_point, "data_format_instructions": data_format_instructions})
+            model_type = data_result['model_type']
+            test_label, label = model_type_checker(model_type, data_class)
+        else:
+            data_result = data_chain.invoke({"code": llm_rewrite, "data_format_instructions": data_format_instructions})
+            model_type = data_result['model_type']
+            test_label, label = model_type_checker(model_type, data_class)
+        if avg_dist >= self.threshold and test_label:
+            if llm_rewrite == "":
+                self.data_writer(data_point, data_class)
+            else:
+                self.data_writer(llm_rewrite, data_class)
+        elif avg_dist >= self.threshold and not test_label:
+            if llm_rewrite == "":
+                self.data_writer(data_point, label)
+            else:
+                self.data_writer(llm_rewrite, label)
         if avg_dist < self.threshold and self.prompting == "few":
             few_data_point = self.few_shot_generate_data(prompt, data_point, data_entries)
-            few_avg_dist, _few_data_entries = self.compare_data_diversity(few_data_point, data_class)
+            few_avg_dist, _few_data_entries, _llm_rewrite = self.compare_data_diversity(few_data_point, data_class)
             print(f"few-shot distance: {few_avg_dist}")
-            if few_avg_dist >= self.threshold:
+            data_result = data_chain.invoke({"code": few_data_point, "data_format_instructions": data_format_instructions})
+            model_type = data_result['model_type']
+            test_label, label = model_type_checker(model_type, data_class)
+            if few_avg_dist >= self.threshold and test_label:
                 self.data_writer(few_data_point, data_class)
+            elif few_avg_dist >= self.threshold and not test_label:
+                self.data_writer(few_data_point, label)
+        if not test_label:
+            print(f"Had model type swap at some point:\ndata_class: {data_class} -> model_type: {model_type}")
         return avg_dist, few_avg_dist
 
+# checks a returned enum of the LLM's response of the model type to the ground truth string of the model class
+def model_type_checker(output, truth):
+    test_label = False
+    if output == ModelType.compartmental and truth == "compart":
+        test_label = True
+        label = truth
+    elif output == ModelType.abm and truth == "abm":
+        test_label = True
+        label = truth
+    else:
+        if output == ModelType.abm:
+            label = "abm"
+        if output == ModelType.compartmental:
+            label = "compart"
+    
+    return test_label, label
 
 
 if __name__ == "__main__":
-    write_directory = "./dataset/new_generator/token_llm_zero"
+    write_directory = "./dataset/new_generator/token_nomic_classless_few2"
     few_vs_zero_logs = write_directory + "/distances.npz"
     checkpoint = "Salesforce/codet5p-110m-embedding"
     nomic_checkpoint = "nomic-ai/nomic-embed-text-v1.5"
@@ -319,23 +402,24 @@ if __name__ == "__main__":
     url = "http://localhost:8000/code2fn/fn-given-filepaths"
     matryoshka_dim = 128
 
-    embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
+    ####embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
     ####embedding_function_chroma_tree = ChromaTreeEmbedding(checkpoint, tree_checkpoint, url)
-    ####embedding_function_chroma_nomic = ChromaNomicEmbedding(nomic_checkpoint, matryoshka_dim)
+    embedding_function_chroma_nomic = ChromaNomicEmbedding(nomic_checkpoint, matryoshka_dim)
     persistent_client_tok = chromadb.PersistentClient() # default settings
     # this gets the collection since it's already present
-    vectordb_seed = persistent_client_tok.get_collection("seed_code", embedding_function=embedding_function_chroma_codet)
+    vectordb_seed = persistent_client_tok.get_collection("seed_code_nomic_fixed", embedding_function=embedding_function_chroma_nomic)
     # need to check that the data is being pulled correctly from the metadata in the vectordb
     # need to check the few shot prompt is staying consistent with the class and overall prompt
-    generator = Generator(vectordb_seed, prompting="zero", metric="llm", threshold=0.5, output=write_directory)
+    # metrics: class, classless, llm | prompting: zero, few
+    generator = Generator(vectordb_seed, prompting="few", metric="classless", threshold=0.1, output=write_directory)
 
     zero_shot_distances = []
     few_shot_distances = []
     print("-----------------")
-    print(f"{len(os.listdir(write_directory))} / 400 files generated")
+    print(f"{len(os.listdir(write_directory))} / 200 files generated")
     print("-----------------")
     run_counter = 0
-    while len(os.listdir(write_directory)) < 400:
+    while len(os.listdir(write_directory)) < 200:
         avg_dist, few_avg_dist = generator.generation_pass()
         if avg_dist != 0:
             zero_shot_distances.append(avg_dist)

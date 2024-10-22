@@ -85,13 +85,15 @@ if __name__ == "__main__":
     nomic_model = SentenceTransformer(nomic_checkpoint, trust_remote_code=True)
     nomic_data = []
     for code_data, label in raw_data:
-        embedding = nomic_model.encode(code_data, convert_to_tensor=True)
-        embedding = embedding[:matryoshka_dim]
-        embedding = F.normalize(embedding, p=2, dim=0).to("cpu").detach()
-        nomic_data.append((embedding, label))
+        nomic_code_data = [f"search_document: {code_data}"]
+        embeddings = nomic_model.encode(nomic_code_data, convert_to_tensor=True)
+        embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[1],))
+        embeddings = embeddings[:, :matryoshka_dim]
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        nomic_data.append((embeddings, label))
 
     nomic_dataset = TokenDatasetWrapper(nomic_data)
-    torch.save(nomic_dataset, test_data_dir+"/nomic_dataset.pth")
+    torch.save(nomic_dataset, test_data_dir+"/nomic_dataset_fixed.pth")
 
     # tree encoding
     tree_data = []
@@ -108,7 +110,7 @@ if __name__ == "__main__":
     torch.save(tree_dataset, test_data_dir+"/tree_dataset.pth")
 
     token_true = os.path.exists(test_data_dir+"/token_dataset.pth")
-    nomic_true = os.path.exists(test_data_dir+"/nomic_dataset.pth")
+    nomic_true = os.path.exists(test_data_dir+"/nomic_dataset_fixed.pth")
     tree_true = os.path.exists(test_data_dir+"/tree_dataset.pth")
 
     print("The test data has been encoded for the following cases:\n")

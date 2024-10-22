@@ -42,13 +42,18 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 TEST_CODE = False
 GENERATE_TOKEN_DBS = False
 GENERATE_TREE_DBS = False
-GENERATE_TOKEN_NOMIC_DBS = False
-TOKEN_NOMIC_MODELS = False
+GENERATE_TOKEN_NOMIC_DBS = True
+TOKEN_NOMIC_MODELS = True
 TOKEN_METRICS = True
 TOKEN_MODELS = True
-TREE_METRICS = False
-TREE_MODELS = False
+TREE_METRICS = True
+TREE_MODELS = True
 CONSTRUCT_NOMIC = False
+FIXING = False
+ADDING_LLM_TOKEN = False
+
+NOMIC_ON_TOKEN = True
+
 
 class CollectionStats:
     def __init__(self, collection_name):
@@ -91,6 +96,101 @@ class CollectionStats:
         self.kurtosis_vec = k
         self.kurtosis = k_mean
 
+
+def check_and_fix_collection(collection, base_directory, chunking):
+    """
+    This takes in a collection and the directory we want to check it against. If we find any data points that don't exist in it, we check if there is an equivalent one of the same file index (indicating it was corrected later) and replace this data point with the corrected one.
+    Args: 
+        collection (collection): The collection to be fixed / checked
+        base_directory (str): The directory the data should be checked against, full path from execution
+        chunking (bool): if chunking done or not for populating the collection
+    Return:
+        None
+    """
+
+    base_data_list = os.listdir(base_directory)
+    base_subdirectory = base_directory.split("/")[-1]
+
+    all_entries = collection.get()
+
+    id_list = all_entries['ids']
+    id_total = len(id_list)
+    metadatas_list = all_entries['metadatas']
+
+    source_list = []
+    for metadata in metadatas_list:
+        source_list.append(metadata['source'])
+
+    replacement_list = []
+    old_file = ""
+    for i, source in enumerate(source_list):
+        subdirectory = source.split("/")[-2]
+        #print(f"subdirectory: {subdirectory}")
+        #print(f"base_subdirectory: {base_subdirectory}")
+        if subdirectory == base_subdirectory:
+            filename = source.split("/")[-1]
+            if filename not in base_data_list:
+                if old_file != filename:
+                    print("Found corrected datapoint!")
+                    print(f"filename: {filename}")
+                    new_filename = ""
+                    for base_file in base_data_list:
+                        if base_file.split("-")[-1] == filename.split("-")[-1]:
+                            new_filename = base_file
+                    replacement_list.append((filename, new_filename))
+                    old_file = filename 
+    
+    # now to go through and add the new files from the replace_list, and the delete the old file entries
+
+    # first load all the data and chunk if needed
+    base_raw_docs = DirectoryLoader(base_directory, glob='*.py', loader_cls=TextLoader).load()
+    if chunking:
+        text_splitter = CharacterTextSplitter(chunk_size=512, chunk_overlap=0)
+        base_docs = text_splitter.split_documents(base_raw_docs)
+    else:
+        base_docs = base_raw_docs
+
+    # collect the paths requires to match 
+    new_filepath_list = []
+    old_filepath_list = []
+    for old_file, new_file in replacement_list:
+        new_filepath = base_directory[2:] + "/" + new_file
+        old_filepath = base_directory[2:] + "/" + old_file
+        new_filepath_list.append(new_filepath)
+        old_filepath_list.append(old_filepath)
+
+    # add the new data
+    if len(new_filepath_list) > 2:
+        for i, entry in enumerate(base_docs):
+            if entry.metadata['source'] in new_filepath_list:
+                collection.add(ids=f"{i+id_total+1}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+
+    # remove the old data
+    print(f"before: {collection.count()}")
+    for filepath in old_filepath_list:
+        ents = collection.get(where={'source': filepath})
+        coll_ids = ents['ids']
+        print(coll_ids)
+        collection.delete(ids = coll_ids)
+    print(f"after: {collection.count()}")
+
+    # print("testing if indexing is matching...")
+    # print(f"test of metadatas_list names: {metadatas_list[0]}")
+    # print(f"first triple of replacement list:\n {replacement_list[0]}")
+    # temp_filename = replacement_list[0][1]
+    # temp_file_path = base_directory[2:] + "/" + temp_filename
+    # ents = collection.get(where={'source': temp_file_path})
+    # coll_ids = ents['ids']
+    # print(f"temp_filename: {temp_filename}")
+    # print(f"temp_file_path: {temp_file_path}")
+    # print(f"ids based on temp_filename: {coll_ids}")
+    # ents2 = collection.get(ids=[coll_ids[0]])
+    # metas = ents2['metadatas']
+    # source_temp = metas[0]
+    # print(f"source_temp: {source_temp}")
+
+    #return collection
+    
 
 def clean_tree_dataset(dataset):
     # need to test and fix the tree data some before putting in loader
@@ -203,17 +303,17 @@ def preprocess_tokenized_dataset_collection_nomic(collection, checkpoint, matryo
     token_data = []
     counter = 1
     for file_name, label in raw_data:
-        with open(file_name, 'r') as file:
+        with open(file_name, 'r', encoding='utf-8') as file:
             content = file.read()
             file.close()
 
-        embedding = model.encode(content, convert_to_tensor=True)
+        input_content = [f"search_document: {content}"]
+        embeddings = model.encode(input_content, convert_to_tensor=True)
         #print(embeddings.shape)
-        #embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[0],))
-        embedding = embedding[:matryoshka_dim]
-        embedding = F.normalize(embedding, p=2, dim=0).to("cpu").detach()
-        #embedding = model(file_encoding).to("cpu").detach()
-        token_data.append((embedding, label))
+        embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[1],))
+        embeddings = embeddings[:, :matryoshka_dim]
+        embeddings = F.normalize(embeddings, p=2, dim=0).to("cpu").detach()
+        token_data.append((embeddings, label))
         
         print(f"file {counter} of {len(raw_data)} done")
         counter += 1
@@ -454,11 +554,13 @@ def construct_diverse_collection(seed_dir, diverse_dir, embedding_function, seed
     i_count = 0
     for i, entry in enumerate(seed_docs):
         collection.add(ids=f"{i}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+        print(f"{i} of {len(seed_docs)} seed entries added to db")
         i_count += 1
     # add in the diverse data
     print("adding diverse docs...")
     for i, entry in enumerate(diverse_docs):
         collection.add(ids=f"{i+i_count+1}", embeddings = embedding_function(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+        print(f"{i} of {len(diverse_docs)} diverse entries added to db")
 
     return collection
 
@@ -565,17 +667,22 @@ if __name__ == "__main__":
         embedding_function = ChromaNomicEmbedding(checkpoint, matryoshka_dim)
 
         seed_dir = "./dataset/new_test_code"
-        seed_collection_name = "seed_code_nomic"
+        seed_collection_name = "seed_code_nomic_fixed"
 
-        token_class_few_dir = "./dataset/new_generator/token_nomic_class_few"
-        token_classless_few_dir = "./dataset/new_generator/token_nomic_classless_few"
-        token_class_zero_dir = "./dataset/new_generator/token_nomic_class_zero"
+        token_class_few_dir = "./dataset/new_generator/token_nomic_class_few2"
+        token_classless_few_dir = "./dataset/new_generator/token_nomic_classless_few2"
+        token_class_zero_dir = "./dataset/new_generator/token_nomic_class_zero2"
+        token_llm_zero_dir = "./dataset/new_generator/token_llm_zero"
 
-        token_class_few_full_name = "token_nomic_class_few_full2"
-        token_class_few_half_name = "token_nomic_class_few_half2"
-        token_class_few_quarter_name = "token_nomic_class_few_quarter2"
-        token_class_zero_name = "token_nomic_class_zero2"
-        token_classless_few_name = "token_nomic_classless_few2"
+        token_class_few_full_name = "token_nomic_class_few_full3"
+        token_class_few_half_name = "token_nomic_class_few_half3"
+        token_class_few_quarter_name = "token_nomic_class_few_quarter3"
+        token_class_zero_name = "token_nomic_class_zero3"
+        token_classless_few_name = "token_nomic_classless_few3"
+        token_llm_zero_name = "token_nomic_llm_zero"
+
+        #if NOMIC_ON_TOKEN:
+
 
         if CONSTRUCT_NOMIC:
             token_class_few_full_collection = construct_diverse_collection(seed_dir, token_class_few_dir, embedding_function, seed_collection_name, token_class_few_full_name, "full", chunking=False)
@@ -587,6 +694,8 @@ if __name__ == "__main__":
             token_class_zero_collection = construct_diverse_collection(seed_dir, token_class_zero_dir, embedding_function, seed_collection_name, token_class_zero_name, "full", chunking=False)
 
             token_classless_few_collection = construct_diverse_collection(seed_dir, token_classless_few_dir, embedding_function, seed_collection_name, token_classless_few_name, "full", chunking=False)
+
+            token_llm_zero_collection = construct_diverse_collection(seed_dir, token_llm_zero_dir, embedding_function, seed_collection_name, token_llm_zero_name, "half", chunking=False)
 
         else:
             persistent_client_few_full = chromadb.PersistentClient()
@@ -604,6 +713,9 @@ if __name__ == "__main__":
             persistent_client_classless = chromadb.PersistentClient()
             token_classless_few_collection = persistent_client_classless.get_collection(token_classless_few_name, embedding_function=embedding_function)
 
+            persistent_client_llm = chromadb.PersistentClient()
+            token_llm_zero_collection = persistent_client_llm.get_collection(token_llm_zero_name, embedding_function=embedding_function)
+
         persistent_client_seed = chromadb.PersistentClient()
         seed_nomic_collection = persistent_client_seed.get_collection(seed_collection_name, embedding_function=embedding_function)
 
@@ -618,6 +730,8 @@ if __name__ == "__main__":
         temp4 =  f"Token_zero:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
         test_metrics.get_stats(token_classless_few_collection)
         temp5 =  f"Token_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_llm_zero_collection)
+        temp6 =  f"Token_llm:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
 
         print("------------------------------")
         print(temp1)
@@ -630,17 +744,20 @@ if __name__ == "__main__":
         print("------------------------------")
         print(temp5)
         print("------------------------------")
+        print(temp6)
+        print("------------------------------")
 
         if TOKEN_NOMIC_MODELS:
             checkpoint = "nomic-ai/nomic-embed-text-v1.5"
             matryoshka_dim = 128
             # encoded dataset locations
-            seed_nomic = "./dataset/encoded_tokens_nomic/seed_tokens_nomic.pth"
-            class_few_full_path = "./dataset/encoded_tokens_nomic/class_few_full.pth"
-            class_few_half_path = "./dataset/encoded_tokens_nomic/class_few_half.pth"
-            class_few_quarter_path = "./dataset/encoded_tokens_nomic/class_few_quarter.pth"
-            class_zero_path = "./dataset/encoded_tokens_nomic/class_zero.pth"
-            classless_few_path = "./dataset/encoded_tokens_nomic/classless_few.pth"
+            seed_nomic = "./dataset/encoded_tokens_nomic/seed_tokens_nomic_fixed.pth"
+            class_few_full_path = "./dataset/encoded_tokens_nomic/class_few_full_fixed.pth"
+            class_few_half_path = "./dataset/encoded_tokens_nomic/class_few_half_fixed.pth"
+            class_few_quarter_path = "./dataset/encoded_tokens_nomic/class_few_quarter_fixed.pth"
+            class_zero_path = "./dataset/encoded_tokens_nomic/class_zero_fixed.pth"
+            classless_few_path = "./dataset/encoded_tokens_nomic/classless_few_fixed.pth"
+            llm_zero_path = "./dataset/encoded_tokens_nomic/llm_zero.pth"
 
             if os.path.exists(seed_nomic):
                 seed_nomic_dataset = torch.load(seed_nomic)
@@ -673,15 +790,20 @@ if __name__ == "__main__":
             else:
                 token_classless_few_dataset = preprocess_tokenized_dataset_collection_nomic(token_classless_few_collection, checkpoint, matryoshka_dim)
                 torch.save(token_classless_few_dataset, classless_few_path)
+            if os.path.exists(llm_zero_path):
+                llm_zero_dataset = torch.load(llm_zero_path)
+            else:
+                llm_zero_dataset = preprocess_tokenized_dataset_collection_nomic(token_llm_zero_collection, checkpoint, matryoshka_dim)
+                torch.save(llm_zero_dataset, llm_zero_path)
 
             #load_seed_dataset_tree = torch.load('./dataset/encoded_tokens/seed_tokens.pth')
 
             # configuration values here:
             LR_RATE = 3e-4
             BATCH_SIZE = 32
-            MAX_EPOCHS = 2
+            MAX_EPOCHS = 4
             DEVICE = "cuda:1"
-            NUM_RUNS = 3
+            NUM_RUNS = 5
 
             # model values here
             TOK_EMBED_DIM = 128
@@ -697,6 +819,7 @@ if __name__ == "__main__":
             loader_tree_class_few_quarter_dataset = DataLoader(dataset=token_class_few_quarter_dataset, batch_size=BATCH_SIZE, shuffle=True)
             loader_tree_class_zero_dataset = DataLoader(dataset=token_class_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
             loader_tree_classless_few_dataset = DataLoader(dataset=token_classless_few_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_llm_zero_dataset = DataLoader(dataset=llm_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             # to make it easier to iterate over all the dataset, we will add them into a list now, with a name for the second entry in the tuple
             loader_list = []
@@ -706,6 +829,7 @@ if __name__ == "__main__":
             loader_list.append((loader_tree_class_few_quarter_dataset, "class_few_quarter_token"))
             loader_list.append((loader_tree_class_zero_dataset, "class_zero_token"))
             loader_list.append((loader_tree_classless_few_dataset, "classless_few_token"))
+            loader_list.append((loader_llm_zero_dataset, "llm_zero_token"))
 
             # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
             for run in range(NUM_RUNS):
@@ -715,13 +839,13 @@ if __name__ == "__main__":
                     loss_function = nn.BCELoss()
                     model.train()
 
-                    for epoch in range(1, MAX_EPOCHS):
+                    for epoch in range(0, MAX_EPOCHS):
                         overall_loss = 0
                         for batch_idx, (data, label) in enumerate(loader):
                             data = data.to(DEVICE)
                             label = label.to(DEVICE)
                             optimizer.zero_grad()
-                            output = model(data)
+                            output = model(data.view(label.shape[0], TOK_EMBED_DIM))
                             loss = loss_function(output.view(label.shape[0]), label.float())
                             overall_loss += loss.item()
                             loss.backward()
@@ -739,6 +863,12 @@ if __name__ == "__main__":
         token_class_few_quarter_name = "token_class_few_quarter"
         token_class_zero_name = "token_class_zero"
         token_classless_few_name = "token_classless_few"
+
+        token_class_few_full_name_base_dir = "./dataset/new_generator/token_class_few_full"
+        token_class_few_half_name_base_dir = "./dataset/new_generator/token_class_few_full"
+        token_class_few_quarter_name_base_dir = "./dataset/new_generator/token_class_few_full"
+        token_class_zero_name_base_dir = "./dataset/new_generator/token_class_zero_full"
+        token_classless_few_name_base_dir = "./dataset/new_generator/token_classless_few_full"
 
         checkpoint = "Salesforce/codet5p-110m-embedding"
         embedding_function = ChromaCodet5pEmbedding(checkpoint)
@@ -762,6 +892,28 @@ if __name__ == "__main__":
 
         token_classless_few = persistent_client_classless_few.get_collection(token_classless_few_name, embedding_function=embedding_function)
 
+        # I need to now clean the datasets based on running the label fixer
+        if FIXING:
+            check_and_fix_collection(token_class_few_full, token_class_few_full_name_base_dir, chunking=True)
+            check_and_fix_collection(token_class_few_half, token_class_few_half_name_base_dir, chunking=True)
+            check_and_fix_collection(token_class_few_quarter, token_class_few_quarter_name_base_dir, chunking=True)
+            check_and_fix_collection(token_class_zero, token_class_zero_name_base_dir, chunking=True)
+            check_and_fix_collection(token_classless_few, token_classless_few_name_base_dir, chunking=True)
+
+        if ADDING_LLM_TOKEN:
+            seed_dir = "./dataset/new_test_code"
+            seed_collection_name = "seed_code"
+
+            token_llm_dir = "./dataset/new_generator/token_llm_zero"
+
+            token_llm_name = "token_llm"
+
+            token_llm_collection = construct_diverse_collection(seed_dir, token_llm_dir, embedding_function, seed_collection_name, token_llm_name, "half", chunking=True)
+        else:
+            token_llm_name = "token_llm"
+            persistent_client_llm = chromadb.PersistentClient()
+            token_llm_collection = persistent_client_llm.get_collection(token_llm_name, embedding_function=embedding_function)
+
         # test to make sure the collections are working as intended
         test_metrics = CollectionStats("test_2")
         test_metrics.get_stats(token_class_few_full)
@@ -774,6 +926,8 @@ if __name__ == "__main__":
         temp4 =  f"Token_zero:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
         test_metrics.get_stats(token_classless_few)
         temp5 =  f"Token_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
+        test_metrics.get_stats(token_llm_collection)
+        temp6 =  f"Token_few_classless:\n\nmetrics.stdev: {test_metrics.stdev:.4f}\n\nmetrics.agg_stdev: {test_metrics.agg_stdev:.4f}\n\nmetrics.avg_stdev: {test_metrics.avg_stdev:.4f}\n\nmetrics.bimod: {test_metrics.bimod:.4f}\n\nmetrics.skewness: {test_metrics.skewness:.4f}\n\nmetrics.kurtosis: {test_metrics.kurtosis:.4f}"
 
         #print("There are", token_class_few_full.count(), "in the collection")
         #print("There are", token_class_few_half.count(), "in the collection")
@@ -792,14 +946,17 @@ if __name__ == "__main__":
         print("------------------------------")
         print(temp5)
         print("------------------------------")
+        print(temp6)
+        print("------------------------------")
 
         if TOKEN_MODELS:
             # encoded dataset locations
-            class_few_full_path = "./dataset/encoded_tokens/class_few_full.pth"
-            class_few_half_path = "./dataset/encoded_tokens/class_few_half.pth"
-            class_few_quarter_path = "./dataset/encoded_tokens/class_few_quarter.pth"
-            class_zero_path = "./dataset/encoded_tokens/class_zero.pth"
-            classless_few_path = "./dataset/encoded_tokens/classless_few.pth"
+            class_few_full_path = "./dataset/encoded_tokens/class_few_full_clean.pth"
+            class_few_half_path = "./dataset/encoded_tokens/class_few_half_clean.pth"
+            class_few_quarter_path = "./dataset/encoded_tokens/class_few_quarter_clean.pth"
+            class_zero_path = "./dataset/encoded_tokens/class_zero_clean.pth"
+            classless_few_path = "./dataset/encoded_tokens/classless_few_clean.pth"
+            token_llm_path = "./dataset/encoded_tokens/token_llm.pth"
 
             if os.path.exists(class_few_full_path):
                 token_class_few_full_dataset = torch.load(class_few_full_path)
@@ -826,15 +983,20 @@ if __name__ == "__main__":
             else:
                 token_classless_few_dataset = preprocess_tokenized_dataset_collection(token_classless_few, checkpoint)
                 torch.save(token_classless_few_dataset, classless_few_path)
+            if os.path.exists(token_llm_path):
+                token_llm_dataset = torch.load(token_llm_path)
+            else:
+                token_llm_dataset = preprocess_tokenized_dataset_collection(token_llm_collection, checkpoint)
+                torch.save(token_llm_dataset, token_llm_path)
 
             load_seed_dataset_tree = torch.load('./dataset/encoded_tokens/seed_tokens.pth')
 
             # configuration values here:
             LR_RATE = 3e-4
             BATCH_SIZE = 32
-            MAX_EPOCHS = 2
+            MAX_EPOCHS = 3
             DEVICE = "cuda:1"
-            NUM_RUNS = 3
+            NUM_RUNS = 5
 
             # model values here
             TOK_EMBED_DIM = 256
@@ -850,6 +1012,7 @@ if __name__ == "__main__":
             loader_tree_class_few_quarter_dataset = DataLoader(dataset=token_class_few_quarter_dataset, batch_size=BATCH_SIZE, shuffle=True)
             loader_tree_class_zero_dataset = DataLoader(dataset=token_class_zero_dataset, batch_size=BATCH_SIZE, shuffle=True)
             loader_tree_classless_few_dataset = DataLoader(dataset=token_classless_few_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            loader_llm_dataset = DataLoader(dataset=token_llm_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
             # to make it easier to iterate over all the dataset, we will add them into a list now, with a name for the second entry in the tuple
             loader_list = []
@@ -859,6 +1022,7 @@ if __name__ == "__main__":
             loader_list.append((loader_tree_class_few_quarter_dataset, "class_few_quarter_token"))
             loader_list.append((loader_tree_class_zero_dataset, "class_zero_token"))
             loader_list.append((loader_tree_classless_few_dataset, "classless_few_token"))
+            loader_list.append((loader_llm_dataset, "llm_token"))
 
             # now to setup a model, train it, get the metrics, save the model, and then reset everything for the next dataset
             for run in range(NUM_RUNS):
@@ -868,7 +1032,7 @@ if __name__ == "__main__":
                     loss_function = nn.BCELoss()
                     model.train()
 
-                    for epoch in range(1, MAX_EPOCHS):
+                    for epoch in range(0, MAX_EPOCHS):
                         overall_loss = 0
                         for batch_idx, (data, label) in enumerate(loader):
                             data = data.to(DEVICE)
@@ -884,7 +1048,7 @@ if __name__ == "__main__":
                     # now to save the model 
                     torch.save(model.state_dict(), f"./models/token_models/{name}/model_{run}.pth")
                     del model
-
+                    print(f"{name} {run} done")
 
     if TREE_METRICS:
         tree_class_few_full_name = "tree_class_few_full3"
@@ -892,6 +1056,12 @@ if __name__ == "__main__":
         tree_class_few_quarter_name = "tree_class_few_quarter3"
         tree_class_zero_name = "tree_class_zero3"
         tree_classless_few_name = "tree_classless_few3"
+
+        tree_class_few_full_name_base_dir = "./dataset/new_generator/tree_class_few"
+        tree_class_few_half_name_base_dir = "./dataset/new_generator/tree_class_few"
+        tree_class_few_quarter_name_base_dir = "./dataset/new_generator/tree_class_few"
+        tree_class_zero_name_base_dir = "./dataset/new_generator/tree_class_zero"
+        tree_classless_few_name_base_dir = "./dataset/new_generator/tree_classless_few"
 
         checkpoint = "Salesforce/codet5p-110m-embedding"
         tree_checkpoint = "./models/tree_ae/tree_ae.pth"
@@ -922,6 +1092,13 @@ if __name__ == "__main__":
         #print("There are", tree_class_zero.count(), "in the collection")
         #print("There are", tree_classless_few.count(), "in the collection")
 
+        if FIXING:
+            check_and_fix_collection(tree_class_few_full, tree_class_few_full_name_base_dir, chunking=False)
+            check_and_fix_collection(tree_class_few_half, tree_class_few_half_name_base_dir, chunking=False)
+            check_and_fix_collection(tree_class_few_quarter, tree_class_few_quarter_name_base_dir, chunking=False)
+            check_and_fix_collection(tree_class_zero, tree_class_zero_name_base_dir, chunking=False)
+            check_and_fix_collection(tree_classless_few, tree_classless_few_name_base_dir, chunking=False)
+
         # test to make sure the collections are working as intended
         test_metrics = CollectionStats("test_2")
         test_metrics.get_stats(tree_class_few_full)
@@ -948,11 +1125,11 @@ if __name__ == "__main__":
         print("------------------------------")
         if TREE_MODELS:
             # see if the dataset have already been generated
-            class_few_full_path = "./dataset/encoded_trees/class_few_full3.pth"
-            class_few_half_path = "./dataset/encoded_trees/class_few_half3.pth"
-            class_few_quarter_path = "./dataset/encoded_trees/class_few_quarter3.pth"
-            class_zero_path = "./dataset/encoded_trees/class_zero3.pth"
-            classless_few_path = "./dataset/encoded_trees/classless_few3.pth"
+            class_few_full_path = "./dataset/encoded_trees/class_few_full_clean.pth"
+            class_few_half_path = "./dataset/encoded_trees/class_few_half_clean.pth"
+            class_few_quarter_path = "./dataset/encoded_trees/class_few_quarter_clean.pth"
+            class_zero_path = "./dataset/encoded_trees/class_zero_clean.pth"
+            classless_few_path = "./dataset/encoded_trees/classless_few_clean.pth"
 
             if os.path.exists(class_few_full_path):
                 tree_class_few_full_dataset = torch.load(class_few_full_path)
@@ -985,10 +1162,10 @@ if __name__ == "__main__":
             # configuration values here:
             LR_RATE = 3e-4
             BATCH_SIZE = 32
-            MAX_EPOCHS = 6
+            MAX_EPOCHS = 5
             GRAPH_CLASS = 1
             DEVICE = "cuda:1"
-            NUM_RUNS = 3
+            NUM_RUNS = 5
 
             # now to get all the datasets into datalaoders
             loader_seed_dataset_tree = GeometricLoader(dataset=load_seed_dataset_tree, batch_size=BATCH_SIZE, shuffle=True)
@@ -1015,7 +1192,7 @@ if __name__ == "__main__":
                     loss_function = nn.BCELoss()
                     model.train()
 
-                    for epoch in range(1, MAX_EPOCHS):
+                    for epoch in range(0, MAX_EPOCHS):
                         overall_loss = 0
                         for batch_idx, (data, label) in enumerate(loader):
                             # need to use data.shape[0] as batch size in view incase dataset is not evenly divisble by 32
@@ -1032,5 +1209,6 @@ if __name__ == "__main__":
                     # now to save the model 
                     torch.save(model.state_dict(), f"./models/tree_models/{name}/model_{run}.pth")
                     del model
+                    print(f"{name} {run} done")
 
                 

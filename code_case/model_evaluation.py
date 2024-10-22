@@ -10,6 +10,7 @@ from langchain.pydantic_v1 import BaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from generator import ModelChecker, ModelType
 from classification_models import TokenClassificationModel, TreeClassificationModel, TokenClassificationModel2
 from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHANNELS, NODE_CLASSES, COMPRESSED_CLASSES, COMPRESSED_GRAPH_FEATURE, GRAPH_FEATURE
 from token_classification_trainer import preprocess_tokenized_dataset, TokenDatasetWrapper
@@ -85,11 +86,14 @@ def mcc_metric(y_pred, y_true):
 
 
 if __name__ == "__main__":
+    # test data directory
+    test_data_dir = "./dataset/test_data"
+
     BATCH_SIZE = 26
     DEVICE = "cuda:1"
     # load the test datasets
     token_test_data = torch.load("./dataset/test_data/token_dataset.pth")
-    nomic_test_data = torch.load("./dataset/test_data/nomic_dataset.pth")
+    nomic_test_data = torch.load("./dataset/test_data/nomic_dataset_fixed.pth")
     tree_test_data = torch.load("./dataset/test_data/tree_dataset.pth")
 
     loader_token_test_data = DataLoader(dataset=token_test_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -219,7 +223,7 @@ if __name__ == "__main__":
                     for data, label in loader_nomic_test_data:
                         data = data.to(DEVICE)
                         label = label.to(DEVICE)
-                        output = model(data)
+                        output = model(data.view(label.shape[0], TOK_EMBED_DIM))
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
@@ -247,7 +251,7 @@ if __name__ == "__main__":
                     for data, label in loader_nomic_test_data:
                         data = data.to(DEVICE)
                         label = label.to(DEVICE)
-                        output = model(data)
+                        output = model(data.view(label.shape[0], TOK_EMBED_DIM))
                         output_classes = (output >= 0.5).long()
                         incorrect_batch = (abs(output_classes.view(-1) - label)).sum().item()
                         total_incorrect += incorrect_batch
@@ -342,6 +346,44 @@ if __name__ == "__main__":
     tree_data_ll = pd.DataFrame(results_ll)
     tree_data_mcc = pd.DataFrame(results_mcc)
 
+    # baseline gpt-4o
+    raw_data = []
+    for filename in os.listdir(test_data_dir):
+        if filename.split(".")[-1] == "py":
+            c = os.path.join(test_data_dir, filename)
+            with open(c, 'r', encoding='utf-8') as code_file:
+                code_data = code_file.read()
+                code_file.close()
+            label_name = filename.split("-")[-2]
+            label_encoding = 0
+            if label_name == "abm":
+                label_encoding = 1
+            raw_data.append((code_data, label_encoding))
+
+    model = ChatOpenAI(model="gpt-4o", temperature=0.0)
+    data_parser = JsonOutputParser(pydantic_object=ModelChecker)
+    data_format_instructions = data_parser.get_format_instructions()
+    data_prompt_template = ChatPromptTemplate.from_messages([("system", "You are a helpful assistant. {data_format_instructions}"),("human", "Determine whether the give code is an implementation of a compartmental model or an agent-based model. \n Code:\n  {code}")])
+    data_chain = data_prompt_template | model | data_parser
+
+    predictions = []
+    truth = []
+    for code, label in raw_data:
+        data_result = data_chain.invoke({"code": code, "data_format_instructions": data_format_instructions})
+        output_label = data_result['model_type']
+        output_encoding = 0
+        if output_label == ModelType.abm:
+            output_encoding = 1
+        predictions.append(output_encoding)
+        truth.append(label)
+    
+    diff_vec = abs(np.subtract(predictions,truth))
+    print(diff_vec)
+    diff_count = sum(diff_vec)
+    base_accuracy = (1-(diff_count/len(raw_data))) * 100
+    
+
+
     #print(token_data)
     #print(nomic_data)
     #print(tree_data)
@@ -362,6 +404,7 @@ if __name__ == "__main__":
     print(latex_token)
     print(latex_nomic)
     print(latex_tree)
+    print(f"baseline: {base_accuracy}")
     print('--------------')
     print('Log Loss:')
     print(latex_token_ll)

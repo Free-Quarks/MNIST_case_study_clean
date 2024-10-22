@@ -20,10 +20,12 @@ from tree_model_trainer import EMBED_DIM, IN_CHANNELS, HIDDEN_CHANNELS, OUT_CHAN
 # config
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 DEVICE = "cuda:1"
+
 CONSTRUCT_CHROMA = False
 CONSTRUCT_CHROMA_TREE = False
 CHROMA_TREE = False
 CONSTRUCT_CHROMA_NOMIC = True
+
 NOMIC_CHECKPOINT = "nomic-ai/nomic-embed-text-v1.5"
 CHECKPOINT = "Salesforce/codet5p-110m-embedding"
 TREE_CHECKPOINT = "./models/tree_ae/tree_ae.pth"
@@ -57,21 +59,24 @@ class ChromaNomicEmbedding(EmbeddingFunction):
     def __call__(self, texts: Documents) -> chromadb.Embeddings:
         """This is a little hack-y right now, need to read more documentation
             to see how to get this working more cleanly."""
-        #print(len(texts))
-        if len(texts) == 1:
-            texts = texts[0]
-        #print(len(tokens_vec))
+
+        texts_clone = []
+        if type(texts) == str:
+            texts_clone.append(f"search_document: {texts}")
+        else:
+            for text in texts:
+                texts_clone.append(f"search_document: {text}")
+
         # This has a lot of extra steps due to the Matryoshka Dimensional Fixing
         matryoshka_dim = self.matryoshka_dim
-        embeddings = self.model.encode(texts, convert_to_tensor=True)
-        #print(embeddings.shape)
-        #embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[0],))
-        embeddings = embeddings[:matryoshka_dim]
-        embeddings = F.normalize(embeddings, p=2, dim=0).tolist()
-        #print(len(embeddings))
+        embeddings = self.model.encode(texts_clone, convert_to_tensor=True)
+        embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[1],))
+        embeddings = embeddings[:, :matryoshka_dim]
+        embeddings = F.normalize(embeddings, p=2, dim=1).tolist()
         if len(embeddings) == 1:
             return embeddings[0]
         else:
+            #print(embeddings)
             return embeddings
 
 # We need to define an embedding function in langchain style to use it in Chroma vector db
@@ -156,7 +161,7 @@ if __name__ == "__main__":
         persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
         collection = persistent_client.get_or_create_collection("seed_code_tree", embedding_function=embedding_function_chroma_tree)
 
-        for i, entry in enumerate(raw_docs):
+        for i, entry in enumerate(raw_docs[0]):
             collection.add(ids=f"{i}", embeddings = embedding_function_chroma_tree(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
             print(f"{i} of {len(raw_docs)} added to db")
 
@@ -190,17 +195,16 @@ if __name__ == "__main__":
         raw_docs = DirectoryLoader(data_dir, glob='*.py', loader_cls=TextLoader).load()
 
         persistent_client = chromadb.PersistentClient() # this is using default settings, so imports will also need defaults
-        collection = persistent_client.get_or_create_collection("seed_code_nomic", embedding_function=embedding_function_chroma_nomic)
-        if collection.count() < 20:
-            for i, entry in enumerate(raw_docs):
-                collection.add(ids=f"{i}", embeddings = embedding_function_chroma_nomic(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
-                print(f"{i} of {len(raw_docs)} added to db")
+        collection = persistent_client.get_or_create_collection("seed_code_nomic_fixed", embedding_function=embedding_function_chroma_nomic)
+        for i, entry in enumerate(raw_docs):
+            collection.add(ids=f"{i}", embeddings = embedding_function_chroma_nomic(entry.page_content), metadatas=entry.metadata, documents=entry.page_content)
+            print(f"{i} of {len(raw_docs)} added to db")
 
-            results = collection.query(
-                query_texts=["def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days):"], # Chroma will embed this for you
-                n_results=2 # how many results to return
-            )
-            print(results)
+        results = collection.query(
+            query_texts=["search_query: def simulate_seir_model(N, I0, E0, R0, beta, gamma, sigma, days)"], # Chroma will embed this for you
+            n_results=2 # how many results to return
+        )
+        print(results['documents'])
 
     else:
         embedding_function_chroma_codet = ChromaCodet5pEmbedding(checkpoint)
